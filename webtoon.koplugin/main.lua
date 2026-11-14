@@ -1,0 +1,281 @@
+--[[ webtoon.koplugin: panel-snap scrolling for webtoons in KOReader.
+
+For CBZs made by kowebtoon (they carry kowebtoon.json, a map of the gaps between panels):
+  * first open switches the book to continuous view, page-width zoom, no page gap, and skips
+    the title cover
+  * a page-turn tap/key glides (a couple of fast frames, then one clean refresh) so the last
+    gap still on screen lands at the top: you always start on a whole panel
+  * the strips just below the screen are pre-rendered while you read, so the next tap is quick
+  * at the end of an episode the next .cbz in the folder opens
+Optionally (Settings > "Glide on any tall comic") plain webtoon CBZs get the glide too, with
+fixed steps instead of panel snapping. Everything else is untouched, and any error falls back to
+KOReader's normal page turn.
+
+https://github.com/binoy-d/koreader-webtoon
+]]
+local Archiver = require("ffi/archiver")
+local Event = require("ui/event")
+local Notification = require("ui/widget/notification")
+local UIManager = require("ui/uimanager")
+local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local json = require("json")
+local lfs = require("libs/libkoreader-lfs")
+local logger = require("logger")
+local time = require("ui/time")
+local util = require("util")
+local _ = require("gettext")
+local T = require("ffi/util").template
+
+local MIN_STEP = 0.2        -- never snap less than this fraction of a screen
+local FALLBACK_STEP = 0.85  -- no gap on screen (tall panel): scroll this much, keeping overlap
+local PREFETCH = 2          -- strips to pre-render below the screen
+
+local DEFAULTS = { frames = 2, flash_every = 20, auto_next = true, glide_tall = false }
+
+local Webtoon = WidgetContainer:extend{
+    name = "webtoon",
+    is_doc_only = true,
+}
+
+function Webtoon:init()
+    self.active = false
+    self.ui.menu:registerToMainMenu(self)
+end
+
+function Webtoon:cfg(key)
+    local s = G_reader_settings:readSetting("webtoon") or {}
+    if s[key] == nil then return DEFAULTS[key] end
+    return s[key]
+end
+
+function Webtoon:setCfg(key, value)
+    local s = G_reader_settings:readSetting("webtoon") or {}
+    s[key] = value
+    G_reader_settings:saveSetting("webtoon", s)
+end
+
+-- kowebtoon.json from inside the CBZ, or nil
+local function readMap(file)
+    if not file:lower():match("%.cbz$") then return nil end
+    local arc = Archiver.Reader:new()
+    if not arc:open(file) then return nil end
+    local data
+    for entry in arc:iterate() do
+        if entry.path == "kowebtoon.json" then
+            data = arc:extractToMemory(entry.path)
+            break
+        end
+    end
+    arc:close()
+    if not data then return nil end
+    local ok, map = pcall(json.decode, data)
+    if ok and type(map) == "table" and type(map.gaps) == "table" then return map end
+end
+
+-- a plain webtoon CBZ: most pages much taller than wide
+local function looksTall(doc)
+    local n, tall = math.min(doc:getPageCount(), 12), 0
+    for p = 1, n do
+        local d = doc:getNativePageDimensions(p)
+        if d and d.h > d.w * 1.6 then tall = tall + 1 end
+    end
+    return n > 0 and tall >= n * 0.6
+end
+
+function Webtoon:onReaderReady()
+    local doc = self.ui.document
+    if not doc or not doc.file or not self.ui.paging then return end
+    local ok, map = pcall(readMap, doc.file)
+    if not ok then logger.warn("webtoon: reading map failed:", map); map = nil end
+    if not map and not (self:cfg("glide_tall") and looksTall(doc)) then return end
+
+    self.map, self.file, self.glides, self.cache = map, doc.file, 0, nil
+    self.active = true
+    self:firstOpenSetup()
+    self:hookPaging()
+    logger.info("webtoon: active,", map and (#map.gaps .. " panel gaps") or "fixed steps")
+end
+
+function Webtoon:firstOpenSetup()
+    local ds = self.ui.doc_settings
+    if ds:isTrue("webtoon_setup_done") then return end
+    ds:saveSetting("webtoon_setup_done", true)
+    local doc, view = self.ui.document, self.ui.view
+    doc.configurable.page_gap_height = 0
+    if view.page_gap then view.page_gap.height = 0 end
+    self.ui:handleEvent(Event:new("SetZoomMode", "pagewidth"))
+    doc.configurable.page_scroll = 1
+    self.ui:handleEvent(Event:new("SetScrollMode", true))
+    local first = self.map and self.map.first_page
+    if first and first > 1 then
+        UIManager:nextTick(function() self.ui:handleEvent(Event:new("GotoPage", first)) end)
+    end
+end
+
+function Webtoon:hookPaging()
+    local paging = self.ui.paging
+    if paging._webtoon_orig then return end
+    local orig = paging.onGotoViewRel
+    paging._webtoon_orig = orig
+    paging.onGotoViewRel = function(p, diff, no_page_turn)
+        if self.active and p.view.page_scroll and no_page_turn ~= true and type(diff) == "number" then
+            local ok, handled = pcall(self.glide, self, diff)
+            if ok and handled then return true end
+            if not ok then logger.warn("webtoon: glide failed, normal turn:", handled) end
+        end
+        return orig(p, diff, no_page_turn)
+    end
+end
+
+-- absolute (screen-px) layout at the current zoom: page tops, total height, gaps
+function Webtoon:layout()
+    local view = self.ui.view
+    local zoom, rot = view.state.zoom, view.state.rotation
+    local c = self.cache
+    if c and c.zoom == zoom and c.rot == rot then return c end
+    local doc = self.ui.document
+    local gap = view.page_gap and view.page_gap.height or 0
+    local tops, heights, acc = {}, {}, 0
+    for p = 1, doc:getPageCount() do
+        tops[p] = acc
+        heights[p] = doc:getPageDimensions(p, zoom, rot).h
+        acc = acc + heights[p] + gap
+    end
+    local abs = {}
+    for _, g in ipairs(self.map and self.map.gaps or {}) do
+        local p, frac = g[1], g[2]
+        if tops[p] then table.insert(abs, tops[p] + frac * heights[p]) end
+    end
+    self.cache = { zoom = zoom, rot = rot, tops = tops, total = acc - gap, gaps = abs }
+    return self.cache
+end
+
+function Webtoon:glide(diff)
+    local t0 = time.now()
+    local view = self.ui.view
+    local top = view.page_states and view.page_states[1]
+    if not top then return false end
+    local L = self:layout()
+    local H = view.visible_area.h
+    local T = L.tops[top.page] + (top.visible_area.y - top.page_area.y)
+    local first_top = (self.map and self.map.first_page and L.tops[self.map.first_page]) or 0
+    local max_top = math.max(0, L.total - H)
+
+    local target
+    if diff > 0 then
+        if T >= max_top - 2 then return self:nextEpisode() end
+        for _, g in ipairs(L.gaps) do          -- last gap still on screen
+            if g > T + MIN_STEP * H and g <= T + H then target = g end
+        end
+        target = math.min(target or (T + FALLBACK_STEP * H), max_top)
+    else
+        if T <= first_top + 2 then return true end
+        for _, g in ipairs(L.gaps) do          -- earliest gap within one screen above
+            if g >= T - H and g < T - MIN_STEP * H then target = g; break end
+        end
+        target = math.max(target or (T - FALLBACK_STEP * H), first_top)
+    end
+    local delta = math.floor(target - T + 0.5)
+    if delta == 0 then return true end
+
+    -- glide: intermediate frames as fast refreshes, then one clean one
+    local paging = self.ui.paging
+    local frames = math.max(1, self:cfg("frames"))
+    local orig_setDirty = UIManager.setDirty
+    local done = 0
+    for i = 1, frames do
+        local step = math.floor(delta * i / frames + 0.5) - done
+        done = done + step
+        if i < frames then
+            UIManager.setDirty = function(um, w, mode, ...) return orig_setDirty(um, w, "fast", ...) end
+        end
+        local ok, err = pcall(paging.onScrollPanRel, paging, step)
+        UIManager.setDirty = orig_setDirty
+        if not ok then error(err) end
+        if i < frames then UIManager:forceRePaint() end
+    end
+    self.glides = self.glides + 1
+    local flash_every = self:cfg("flash_every")
+    UIManager:setDirty(view.dialog, (flash_every > 0 and self.glides % flash_every == 0) and "full" or "ui")
+    paging:setPagePosition(paging:getTopPage(), paging:getTopPosition())
+    logger.dbg("webtoon: glide", delta, "px in", time.to_ms(time.since(t0)), "ms")
+    UIManager:scheduleIn(0.4, function() self:prefetch() end)
+    return true
+end
+
+-- render the next strips into KOReader's cache while the reader is looking at this screen
+function Webtoon:prefetch()
+    local view, doc = self.ui.view, self.ui.document
+    local states = view.page_states
+    if not (states and #states > 0 and doc.hintPage) then return end
+    local last = states[#states].page
+    for p = last + 1, math.min(doc:getPageCount(), last + PREFETCH) do
+        pcall(doc.hintPage, doc, p, view.state.zoom, view.state.rotation, view.state.gamma)
+    end
+end
+
+function Webtoon:nextEpisode()
+    if not self:cfg("auto_next") then return true end
+    local dir, name = util.splitFilePathName(self.file)
+    local files = {}
+    for f in lfs.dir(dir) do
+        if f:lower():match("%.cbz$") then table.insert(files, f) end
+    end
+    table.sort(files)
+    for i, f in ipairs(files) do
+        if f == name and files[i + 1] then
+            local label = files[i + 1]:gsub("%.cbz$", ""):gsub("^%d+%s*%-%s*", "")
+            UIManager:show(Notification:new{ text = T(_("Next: %1"), label) })
+            local nxt = dir .. files[i + 1]
+            UIManager:nextTick(function() self.ui:switchDocument(nxt) end)
+            return true
+        end
+    end
+    UIManager:show(Notification:new{ text = _("That was the last downloaded episode.") })
+    return true
+end
+
+function Webtoon:addToMainMenu(menu_items)
+    menu_items.webtoon = {
+        text = _("Webtoon scroll"),
+        sorting_hint = "typeset",
+        sub_item_table = {
+            {
+                text_func = function() return T(_("Glide frames: %1"), self:cfg("frames")) end,
+                help_text = _("Fast frames per tap. Fewer = snappier and less blinky; more = smoother motion."),
+                keep_menu_open = true,
+                callback = function(tm)
+                    local f = self:cfg("frames") % 4 + 1
+                    self:setCfg("frames", f)
+                    if tm then tm:updateItems() end
+                end,
+            },
+            {
+                text_func = function()
+                    local n = self:cfg("flash_every")
+                    return n > 0 and T(_("Clean flash every %1 taps"), n) or _("Clean flash: off")
+                end,
+                help_text = _("A full black-white flash clears e-ink ghosting. Tap to cycle 10 / 20 / 40 / off."),
+                keep_menu_open = true,
+                callback = function(tm)
+                    local nxt = { [10] = 20, [20] = 40, [40] = 0, [0] = 10 }
+                    self:setCfg("flash_every", nxt[self:cfg("flash_every")] or 20)
+                    if tm then tm:updateItems() end
+                end,
+            },
+            {
+                text = _("Open next episode at the end"),
+                checked_func = function() return self:cfg("auto_next") end,
+                callback = function() self:setCfg("auto_next", not self:cfg("auto_next")) end,
+            },
+            {
+                text = _("Glide on any tall comic (no panel map)"),
+                help_text = _("Also glide through webtoon CBZs not made by kowebtoon, in fixed steps. Applies when a book is opened."),
+                checked_func = function() return self:cfg("glide_tall") end,
+                callback = function() self:setCfg("glide_tall", not self:cfg("glide_tall")) end,
+            },
+        },
+    }
+end
+
+return Webtoon
