@@ -155,6 +155,7 @@ you read.
 | Open next episode at the end | on | |
 | Glide on any tall comic | off | Glide (fixed steps, no snapping) for webtoon CBZs from other tools |
 | Side margin for new downloads | 5% | Blank space left and right of each panel |
+| Turn off night mode for webtoons | on | Art reads un-inverted; night mode returns when you leave |
 </details>
 
 ## FAQ

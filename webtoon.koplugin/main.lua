@@ -30,7 +30,7 @@ local MIN_STEP = 0.2        -- never snap less than this fraction of a screen
 local FALLBACK_STEP = 0.85  -- no gap on screen (tall panel): scroll this much, keeping overlap
 local PREFETCH = 2          -- strips to pre-render below the screen
 
-local DEFAULTS = { frames = 2, flash_every = 20, auto_next = true, glide_tall = false, margin = 0.05 }
+local DEFAULTS = { frames = 2, flash_every = 20, auto_next = true, glide_tall = false, margin = 0.05, day_mode = true }
 
 -- make this plugin's own modules (wt_*.lua) requireable, also from download subprocesses
 local plugin_dir = debug.getinfo(1, "S").source:match("^@(.*)/[^/]*$")
@@ -52,6 +52,15 @@ function Webtoon:init()
         title = _("Webtoons: library"), general = true })
     Dispatcher:registerAction("webtoon_check_new", { category = "none", event = "WebtoonCheckNew",
         title = _("Webtoons: check for new episodes"), general = true })
+    -- KOReader was quit while a webtoon was open: give night mode back in the file browser
+    if not self.ui.document and G_reader_settings:isTrue("webtoon_restore_night") then
+        UIManager:nextTick(function()
+            if G_reader_settings:isTrue("webtoon_restore_night") then
+                G_reader_settings:delSetting("webtoon_restore_night")
+                UIManager:broadcastEvent(Event:new("SetNightMode", true))
+            end
+        end)
+    end
 end
 
 function Webtoon:library() return require("wt_library") end
@@ -107,9 +116,41 @@ function Webtoon:onReaderReady()
 
     self.map, self.file, self.glides, self.cache = map, doc.file, 0, nil
     self.active = true
+    self:dayMode()
     self:firstOpenSetup()
     self:hookPaging()
     logger.info("webtoon: active,", map and (#map.gaps .. " panel gaps") or "fixed steps")
+end
+
+-- Night mode inverts the art, so webtoons read in day mode (setting "day_mode", on by default).
+-- Night mode comes back when you leave; going straight to the next episode keeps day mode, so the
+-- screen doesn't flip twice. The pending restore lives at module level to survive document switches.
+local pending_restore
+
+local function restoreNight()
+    pending_restore = nil
+    if G_reader_settings:isTrue("webtoon_restore_night") then
+        G_reader_settings:delSetting("webtoon_restore_night")
+        UIManager:broadcastEvent(Event:new("SetNightMode", true))
+    end
+end
+
+function Webtoon:dayMode()
+    if pending_restore then UIManager:unschedule(pending_restore); pending_restore = nil end
+    if not self:cfg("day_mode") then return end
+    if G_reader_settings:isTrue("night_mode") then
+        G_reader_settings:saveSetting("webtoon_restore_night", true)
+        UIManager:broadcastEvent(Event:new("SetNightMode", false))
+    end
+end
+
+function Webtoon:onCloseDocument()
+    if not self.active then return end
+    self.active = false
+    if G_reader_settings:isTrue("webtoon_restore_night") then
+        pending_restore = restoreNight
+        UIManager:scheduleIn(1.5, restoreNight)
+    end
 end
 
 function Webtoon:firstOpenSetup()
@@ -294,6 +335,12 @@ function Webtoon:addToMainMenu(menu_items)
                     self:setCfg("flash_every", nxt[self:cfg("flash_every")] or 20)
                     if tm then tm:updateItems() end
                 end,
+            },
+            {
+                text = _("Turn off night mode for webtoons"),
+                help_text = _("Webtoon art reads best un-inverted. Night mode comes back when you leave the episode."),
+                checked_func = function() return self:cfg("day_mode") end,
+                callback = function() self:setCfg("day_mode", not self:cfg("day_mode")) end,
             },
             {
                 text = _("Open next episode at the end"),
