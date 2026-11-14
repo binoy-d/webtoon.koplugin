@@ -59,7 +59,11 @@ kowebtoon config --device kindle-pw5 --to /Volumes/Kindle/koreader-books/Webtoon
 ```
 
 `--to` is a folder on the plugged-in reader, or `ssh://user@host:port/path` if you run an
-SSH server on it (for example KOReader's built-in one).
+SSH server on it (for example KOReader's built-in one). Repeat `--to` to deliver the same files
+to several places, e.g. your reader *and* the library folder of a book server that syncs with
+KOReader (BookOrbit, Calibre-Web, ...). Identical files mean reading progress can sync between
+them. If one destination is unreachable (reader asleep), the others still get the episodes;
+send them again later with `--resend`.
 
 Grab episodes:
 

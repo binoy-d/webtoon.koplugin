@@ -64,6 +64,8 @@ def grab(url, episodes, cfg, args):
         name = f"{n:03d} - {safe(subj)}.cbz"
         path = os.path.join(sdir, name)
         if os.path.exists(path) and not args.force:
+            if args.resend:
+                made.append(path)
             continue
         urls = webtoons.episode_image_urls(viewer)
         if not urls:
@@ -79,13 +81,25 @@ def grab(url, episodes, cfg, args):
             pages = render.make_pages_cbz(parts, path, f"{series} {subj}", width, height, cover)
             print(f"  ep {n}: {pages} pages -> {name}")
         made.append(path)
-    dest = args.to or cfg.get("to")
-    if dest and made:
-        deliver.deliver(made, dest, series_dir)
-        print(f"  delivered {len(made)} to {dest}/{series_dir}")
-    elif made and not dest:
+    dests = destinations(args.to or cfg.get("to"))
+    if made and not dests:
         print(f"  saved in {sdir} (set a destination with: kowebtoon config --to ...)")
+    for dest in dests if made else []:
+        # the same file goes everywhere, so a library server (e.g. BookOrbit) and the reader
+        # see identical files and can sync progress between them
+        try:
+            deliver.deliver(made, dest, series_dir)
+            print(f"  delivered {len(made)} to {dest}/{series_dir}")
+        except (Exception, SystemExit) as e:
+            print(f"  could not deliver to {dest}: {e}\n"
+                  f"  (episodes are saved in {sdir}; retry later with --resend)")
     return series, max([n for n, _, _ in eps if n in chosen] or [0])
+
+
+def destinations(value):
+    if not value:
+        return []
+    return [value] if isinstance(value, str) else list(value)
 
 
 def main(argv=None):
@@ -99,10 +113,13 @@ def main(argv=None):
         p.add_argument("--width", type=int); p.add_argument("--height", type=int)
         p.add_argument("--format", choices=["scroll", "pages"],
                        help="scroll (default, needs webtoon.koplugin) or pages (any reader)")
-        p.add_argument("--to", help="destination: a folder on the mounted e-reader, or ssh://[user@]host[:port]/path")
+        p.add_argument("--to", action="append",
+                       help="destination (repeatable): a folder on the mounted e-reader, or "
+                            "ssh://[user@]host[:port]/path; e.g. your reader AND your library server")
         p.add_argument("--out", help=f"local library folder (default {DEFAULT_OUT})")
         p.add_argument("--no-cover", action="store_true", help="don't add a title cover page")
         p.add_argument("--force", action="store_true", help="rebuild episodes that already exist")
+        p.add_argument("--resend", action="store_true", help="deliver already-built episodes again")
 
     g = sub.add_parser("get", help="grab episodes of a series"); common(g)
     g.add_argument("url"); g.add_argument("--episodes", help="e.g. 1-10, 3,5,8 or latest (default: all)")
@@ -114,7 +131,7 @@ def main(argv=None):
     sub.add_parser("list", help="show followed series")
     sub.add_parser("devices", help="list screen presets")
     c = sub.add_parser("config", help="set defaults")
-    c.add_argument("--device"); c.add_argument("--to"); c.add_argument("--out")
+    c.add_argument("--device"); c.add_argument("--to", action="append"); c.add_argument("--out")
     c.add_argument("--format", choices=["scroll", "pages"])
 
     a = ap.parse_args(argv)
