@@ -21,13 +21,21 @@ GUTTER_SPREAD = 6       # a row counts as blank if every pixel is within this ma
 MAX_SHRINK = 2.0        # pages format: a single panel up to this x page height stays whole
 
 
-def load_strips(blobs, width):
-    """Decode, greyscale and resize every strip to exactly the screen width (no on-device scaling)."""
+def load_strips(blobs, width, margin=0.0):
+    """Decode, greyscale and resize every strip to the screen width (no on-device scaling).
+
+    margin: blank space left and right of the art, as a fraction of the width per side.
+    """
+    art_w = max(1, round(width * (1 - 2 * margin)))
     parts = []
     for b in blobs:
         im = ImageOps.grayscale(Image.open(io.BytesIO(b)).convert("RGB"))
-        if im.width != width:
-            im = im.resize((width, max(1, round(im.height * width / im.width))), Image.LANCZOS)
+        if im.width != art_w:
+            im = im.resize((art_w, max(1, round(im.height * art_w / im.width))), Image.LANCZOS)
+        if art_w != width:
+            page = Image.new("L", (width, im.height), 255)
+            page.paste(im, ((width - art_w) // 2, 0))
+            im = page
         parts.append(im)
     return parts
 

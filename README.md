@@ -28,6 +28,8 @@ then one crisp refresh. No panel or bubble is ever split.
 
 ## Why you'll like it
 
+- 📲 **Find and download on the device.** Search webtoons.com from KOReader, pick a series, and
+  episodes download in the background while you keep reading. No computer needed.
 - 🎯 **Panel snap.** Taps land on the gaps between panels, never mid-panel.
 - ⚡ **Fast on e-ink.** Strips are pre-sized to your screen and the next ones are drawn while you
   read, so each tap is quick.
@@ -37,6 +39,10 @@ then one crisp refresh. No panel or bubble is ever split.
   your library looks great in the cover browser.
 - 🔄 **Plays well with sync.** Deliver the same files to your reader *and* a library server
   (BookOrbit, Calibre-Web, ...) and reading progress follows you.
+- 📖 **A library that remembers.** Your series, with ✓ read, ↓ downloaded and % progress on every
+  episode, plus "download next 5 unread" and "check for new episodes".
+- 🖐️ **Gesture-friendly.** "Webtoons: library" and "check for new episodes" can be mapped to any
+  gesture or button in KOReader.
 - 🧘 **Leaves your books alone.** It only activates on webtoon episodes.
 
 ## Quick start
@@ -45,8 +51,9 @@ then one crisp refresh. No panel or bubble is ever split.
 
 - **From KOReader:** with the [App Store plugin](https://github.com/omer-faruq/appstore.koplugin),
   search for *webtoon* and tap Install.
-- **By hand:** download this repo, copy the `webtoon.koplugin` folder into KOReader's `plugins/`
-  folder, restart KOReader.
+- **By hand:** download `webtoon.koplugin.zip` from the
+  [latest release](https://github.com/binoy-d/webtoon.koplugin/releases/latest), unzip it into
+  KOReader's `plugins/` folder, restart KOReader.
 
   | Device | Plugins folder |
   | --- | --- |
@@ -55,7 +62,19 @@ then one crisp refresh. No panel or bubble is ever split.
   | PocketBook | `applications/koreader/plugins/` |
   | Android | `koreader/plugins/` |
 
-**2. Install the converter** (on your computer, Python 3.9+)
+**2. Get some webtoons**
+
+On the device: **Menu → Webtoons → Search webtoons…**, pick a series, then *Download next 5 unread*
+(or any range, up to 10 at a time). Episodes appear in `Webtoons/<Series>/` in your home folder as
+they finish. Open one and tap.
+
+**Prefer your computer?** The `kowebtoon` converter makes the same files, faster, and can deliver to
+several places at once (your reader and a book server).
+
+<details>
+<summary><b>Converter install and use</b></summary>
+
+Python 3.9+:
 
 ```bash
 pipx install git+https://github.com/binoy-d/webtoon.koplugin
@@ -68,7 +87,8 @@ kowebtoon config --device kindle-pw5 --to /Volumes/Kindle/koreader-books/Webtoon
 kowebtoon get "https://www.webtoons.com/en/<genre>/<series>/list?title_no=<id>" --episodes 1-10
 ```
 
-Open an episode in KOReader and tap. That's it: the first open sets up continuous view for you.
+Open an episode in KOReader and tap. The first open sets up continuous view for you.
+</details>
 
 ## Keep up with a series
 
@@ -95,7 +115,7 @@ once, e.g. your reader *and* a book server. Add `?layout=folders` to a destinati
 episode its own folder; servers like BookOrbit need that to list episodes as separate books.
 If one destination is offline, the others still get the files; send later with `--resend`.
 
-**Other flags:** `--format pages` makes pre-cut, screen-shaped pages for readers without the
+**Other flags:** `--margin 0.05` sets the blank space beside each panel. `--format pages` makes pre-cut, screen-shaped pages for readers without the
 plugin. `--width/--height` sets a custom screen size. `--no-cover` skips the cover, and `--force`
 rebuilds episodes you already have.
 </details>
@@ -134,6 +154,7 @@ you read.
 | Clean flash every | 20 taps | 10 / 20 / 40 / off |
 | Open next episode at the end | on | |
 | Glide on any tall comic | off | Glide (fixed steps, no snapping) for webtoon CBZs from other tools |
+| Side margin for new downloads | 5% | Blank space left and right of each panel |
 </details>
 
 ## FAQ
@@ -158,13 +179,12 @@ wrong, the tap falls back to KOReader's normal page turn.
 
 ## Roadmap
 
-- Search, pick episodes and download **on the device**, in the background
 - Panel snapping for any webtoon CBZ, detected on the device
 - More sources
 
 ## Responsible use
 
-The converter only fetches episodes that webtoons.com shows for free, for reading on your own
+The plugin and the converter only fetch episodes that webtoons.com shows for free, for reading on your own
 device. Please support the creators: read new episodes on WEBTOON too, and don't share the files.
 
 ## Contributing

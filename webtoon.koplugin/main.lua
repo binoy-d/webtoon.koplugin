@@ -30,17 +30,33 @@ local MIN_STEP = 0.2        -- never snap less than this fraction of a screen
 local FALLBACK_STEP = 0.85  -- no gap on screen (tall panel): scroll this much, keeping overlap
 local PREFETCH = 2          -- strips to pre-render below the screen
 
-local DEFAULTS = { frames = 2, flash_every = 20, auto_next = true, glide_tall = false }
+local DEFAULTS = { frames = 2, flash_every = 20, auto_next = true, glide_tall = false, margin = 0.05 }
+
+-- make this plugin's own modules (wt_*.lua) requireable, also from download subprocesses
+local plugin_dir = debug.getinfo(1, "S").source:match("^@(.*)/[^/]*$")
+if plugin_dir and not package.path:find(plugin_dir, 1, true) then
+    package.path = plugin_dir .. "/?.lua;" .. package.path
+end
+
+local Dispatcher = require("dispatcher")
 
 local Webtoon = WidgetContainer:extend{
     name = "webtoon",
-    is_doc_only = true,
+    is_doc_only = false,          -- the library/downloader is reachable from the file browser too
 }
 
 function Webtoon:init()
     self.active = false
     self.ui.menu:registerToMainMenu(self)
+    Dispatcher:registerAction("webtoon_library", { category = "none", event = "WebtoonLibrary",
+        title = _("Webtoons: library"), general = true })
+    Dispatcher:registerAction("webtoon_check_new", { category = "none", event = "WebtoonCheckNew",
+        title = _("Webtoons: check for new episodes"), general = true })
 end
+
+function Webtoon:library() return require("wt_library") end
+function Webtoon:onWebtoonLibrary() self:library():showHome(); return true end
+function Webtoon:onWebtoonCheckNew() self:library():checkNew(); return true end
 
 function Webtoon:cfg(key)
     local s = G_reader_settings:readSetting("webtoon") or {}
@@ -237,9 +253,25 @@ end
 
 function Webtoon:addToMainMenu(menu_items)
     menu_items.webtoon = {
-        text = _("Webtoon scroll"),
-        sorting_hint = "typeset",
+        text = _("Webtoons"),
+        sorting_hint = self.ui.document and "typeset" or "tools",
         sub_item_table = {
+            { text = _("Library"), callback = function() self:library():showHome() end },
+            { text = _("Search webtoons…"), callback = function() self:library():askSearch() end },
+            { text = _("Check for new episodes"), callback = function() self:library():checkNew() end,
+              separator = true },
+            {
+                text_func = function()
+                    return T(_("Side margin for new downloads: %1%"), math.floor(self:cfg("margin") * 100 + 0.5))
+                end,
+                help_text = _("Blank space left and right of each panel in episodes downloaded on this device. Tap to cycle 0 / 3 / 5 / 8 %."),
+                keep_menu_open = true,
+                callback = function(tm)
+                    local nxt = { [0] = 0.03, [3] = 0.05, [5] = 0.08, [8] = 0 }
+                    self:setCfg("margin", nxt[math.floor(self:cfg("margin") * 100 + 0.5)] or 0.05)
+                    if tm then tm:updateItems() end
+                end,
+            },
             {
                 text_func = function() return T(_("Glide frames: %1"), self:cfg("frames")) end,
                 help_text = _("Fast frames per tap. Fewer = snappier and less blinky; more = smoother motion."),

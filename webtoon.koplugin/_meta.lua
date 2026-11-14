@@ -1,7 +1,7 @@
 local _ = require("gettext")
 return {
     name = "webtoon",
-    fullname = _("Webtoon scroll"),
-    description = _([[Panel-snap scrolling for webtoons: taps glide to the next gap between panels, the next strips are pre-rendered, and the next episode opens at the end.]]),
-    version = "0.1.0",
+    fullname = _("Webtoons"),
+    description = _([[Find, download and read webtoons on e-ink: search webtoons.com, download episodes in the background, and read with panel-snap scrolling.]]),
+    version = "0.2.0",
 }

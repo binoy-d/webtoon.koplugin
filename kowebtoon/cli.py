@@ -71,7 +71,8 @@ def grab(url, episodes, cfg, args):
         if not urls:
             print(f"  ep {n}: locked or not free, skipped")
             continue
-        parts = render.load_strips([webtoons.fetch(u) for u in urls], width)
+        margin = args.margin if args.margin is not None else cfg.get("margin", 0.05)
+        parts = render.load_strips([webtoons.fetch(u) for u in urls], width, margin)
         ep_title = re.sub(r"^(Ep\.|Episode)\s*\d+\s*[-:–]\s*", "", subj)
         cover = None if args.no_cover else render.make_cover(parts, series, n, ep_title, width, height)
         if fmt == "scroll":
@@ -117,6 +118,7 @@ def main(argv=None):
                        help="destination (repeatable): a folder on the mounted e-reader, or "
                             "ssh://[user@]host[:port]/path; e.g. your reader AND your library server")
         p.add_argument("--out", help=f"local library folder (default {DEFAULT_OUT})")
+        p.add_argument("--margin", type=float, help="blank space left/right of each panel, fraction per side (default 0.05)")
         p.add_argument("--no-cover", action="store_true", help="don't add a title cover page")
         p.add_argument("--force", action="store_true", help="rebuild episodes that already exist")
         p.add_argument("--resend", action="store_true", help="deliver already-built episodes again")
@@ -133,6 +135,7 @@ def main(argv=None):
     c = sub.add_parser("config", help="set defaults")
     c.add_argument("--device"); c.add_argument("--to", action="append"); c.add_argument("--out")
     c.add_argument("--format", choices=["scroll", "pages"])
+    c.add_argument("--margin", type=float)
 
     a = ap.parse_args(argv)
     cfg = load_config()
@@ -141,7 +144,7 @@ def main(argv=None):
         for k, (w, h) in sorted(devices.DEVICES.items()):
             print(f"{k:16} {w}x{h}")
     elif a.cmd == "config":
-        for k in ("device", "to", "out", "format"):
+        for k in ("device", "to", "out", "format", "margin"):
             if getattr(a, k):
                 cfg[k] = getattr(a, k)
         save_config(cfg)

@@ -1,0 +1,205 @@
+--[[ Builds one episode CBZ on the device (runs inside a download subprocess).
+
+Same output as the desktop converter: [title cover] + strips sized to the screen width (with a
+small side margin), greyscale JPEGs, plus kowebtoon.json with the gaps between panels.
+]]
+local Archiver = require("ffi/archiver")
+local Blitbuffer = require("ffi/blitbuffer")
+local Device = require("device")
+local Font = require("ui/font")
+local RenderImage = require("ui/renderimage")
+local TextBoxWidget = require("ui/widget/textboxwidget")
+local TextWidget = require("ui/widget/textwidget")
+local ffi = require("ffi")
+local json = require("json")
+local lfs = require("libs/libkoreader-lfs")
+local Source = require("wt_source")
+
+local M = {}
+
+local BLANK = 6            -- a row is blank if all its pixels are within this many grey levels
+
+local function readFile(p)
+    local f = io.open(p, "rb"); if not f then return end
+    local d = f:read("*a"); f:close(); return d
+end
+
+local function toGray(bb)
+    if bb:getType() == Blitbuffer.TYPE_BB8 then return bb end
+    local g = Blitbuffer.new(bb:getWidth(), bb:getHeight(), Blitbuffer.TYPE_BB8)
+    g:blitFrom(bb)
+    bb:free()
+    return g
+end
+
+-- decode -> grey -> art width -> centred on a white page-width strip
+local function prepareStrip(data, page_w, art_w)
+    local bb = RenderImage:renderImageData(data, #data, false)
+    if not bb then return nil, "could not decode image" end
+    bb = toGray(bb)
+    if bb:getWidth() ~= art_w then
+        local h = math.max(1, math.floor(bb:getHeight() * art_w / bb:getWidth() + 0.5))
+        bb = toGray(RenderImage:scaleBlitBuffer(bb, art_w, h, true))
+    end
+    if art_w == page_w then return bb end
+    local out = Blitbuffer.new(page_w, bb:getHeight(), Blitbuffer.TYPE_BB8)
+    out:fill(Blitbuffer.COLOR_WHITE)
+    out:blitFrom(bb, math.floor((page_w - art_w) / 2), 0)
+    bb:free()
+    return out
+end
+
+-- one boolean per row: is it blank?
+local function blankRows(bb, into)
+    local w, h = bb:getWidth(), bb:getHeight()
+    local base = ffi.cast("uint8_t*", bb.data)
+    local stride = tonumber(bb.stride)
+    for y = 0, h - 1 do
+        local row = base + y * stride
+        local lo, hi, blank = row[0], row[0], true
+        for x = 1, w - 1 do
+            local v = row[x]
+            if v < lo then lo = v elseif v > hi then hi = v end
+            if hi - lo > BLANK then blank = false; break end
+        end
+        into[#into + 1] = blank
+    end
+end
+
+local function encodeJpeg(bb, tmp)
+    bb:writeToFile(tmp, "jpg", 85, true)
+    local d = readFile(tmp)
+    os.remove(tmp)
+    return d
+end
+
+-- the biggest panel in the middle 80% of the episode, as {start_row, end_row}
+local function pickPanel(bounds, total)
+    local best, span = -1, nil
+    for i = 1, #bounds - 1 do
+        local s, e = bounds[i], bounds[i + 1]
+        if s > total * 0.1 and e < total * 0.95 and e - s > best then best, span = e - s, { s, e } end
+    end
+    return span or { 0, math.min(total, 1200) }
+end
+
+local function drawCover(page_w, page_h, panel_bb, series, ep_no, ep_title)
+    local cover = Blitbuffer.new(page_w, page_h, Blitbuffer.TYPE_BB8)
+    cover:fill(Blitbuffer.COLOR_WHITE)
+    local art_h = math.floor(page_h * 0.64)
+    local pad = math.floor(page_w * 0.04)
+    if panel_bb then
+        local bw, bh = page_w - 2 * pad, art_h - 2 * pad
+        local s = math.min(bw / panel_bb:getWidth(), bh / panel_bb:getHeight())
+        local nw, nh = math.max(1, math.floor(panel_bb:getWidth() * s)), math.max(1, math.floor(panel_bb:getHeight() * s))
+        local scaled = toGray(RenderImage:scaleBlitBuffer(panel_bb, nw, nh, true))
+        cover:blitFrom(scaled, math.floor((page_w - nw) / 2), pad + math.floor((bh - nh) / 2))
+        scaled:free()
+    end
+    cover:paintRect(0, art_h, page_w, math.max(2, math.floor(page_w / 300)), Blitbuffer.COLOR_BLACK)
+    local m = math.floor(page_w * 0.07)
+    local y = art_h + math.floor(page_h * 0.035)
+    local px = function(v) return math.floor(v / Device.screen:scaleBySize(1) + 0.5) end   -- getFace scales sizes
+    local small = TextWidget:new{ text = "EPISODE " .. ep_no, face = Font:getFace("NotoSerif-Regular.ttf", px(page_w * 0.035)), fgcolor = Blitbuffer.gray(0.6) }
+    small:paintTo(cover, m, y); y = y + small:getSize().h + math.floor(page_w * 0.015)
+    local big = TextBoxWidget:new{ text = series, face = Font:getFace("NotoSerif-Bold.ttf", px(page_w * 0.075)), width = page_w - 2 * m, height_adjust = true }
+    big:paintTo(cover, m, y); y = y + big:getSize().h + math.floor(page_w * 0.02)
+    local sub = TextBoxWidget:new{ text = ep_title, face = Font:getFace("NotoSerif-Regular.ttf", px(page_w * 0.045)), width = page_w - 2 * m, fgcolor = Blitbuffer.gray(0.75) }
+    sub:paintTo(cover, m, y)
+    small:free(); big:free(); sub:free()
+    return cover
+end
+
+--- Build `<dir>/<NNN> - <title>.cbz`.
+-- opts: page_w, page_h, margin (fraction per side), series, progress(fn(done, total))
+function M.build(ep, dir, opts)
+    local urls, err = Source.images(ep.url)
+    if not urls then return nil, err end
+    if #urls == 0 then return nil, "locked or not free" end
+    local page_w, page_h = opts.page_w, opts.page_h
+    local art_w = math.floor(page_w * (1 - 2 * (opts.margin or 0)) + 0.5)
+    local tmpdir = dir .. "/.kowebtoon-tmp"
+    lfs.mkdir(tmpdir)
+    local tmpjpg = tmpdir .. "/s.jpg"
+
+    local strips, heights, blank = {}, {}, {}
+    for i, u in ipairs(urls) do
+        local data, e = Source.get(u)
+        if not data then return nil, "download failed: " .. tostring(e) end
+        local bb, e2 = prepareStrip(data, page_w, art_w)
+        if not bb then return nil, e2 end
+        blankRows(bb, blank)
+        heights[i] = bb:getHeight()
+        strips[i] = encodeJpeg(bb, tmpjpg)
+        bb:free()
+        if opts.progress then opts.progress(i, #urls) end
+    end
+
+    -- gaps between panels: centres of long-enough blank runs, as {page, fraction}; page 1 = cover
+    local tops, acc = {}, 0
+    for i, h in ipairs(heights) do tops[i] = acc; acc = acc + h end
+    local total, min_run = acc, math.max(8, math.floor(page_w / 60))
+    local gaps, bounds, y = {}, { 0 }, 1
+    local function locate(g)
+        local p = #tops
+        while p > 1 and tops[p] > g do p = p - 1 end
+        return p
+    end
+    while y <= total do
+        if blank[y] then
+            local s = y
+            while y <= total and blank[y] do y = y + 1 end
+            if y - s >= min_run then
+                local g = math.floor((s + y) / 2) - 1
+                local p = locate(g)
+                table.insert(gaps, { p + 1, math.floor((g - tops[p]) / heights[p] * 100000) / 100000 })
+                table.insert(bounds, g)
+            end
+        end
+        y = y + 1
+    end
+    table.insert(bounds, total)
+
+    -- cover art: the biggest panel, re-decoded from the strips it spans
+    local span = pickPanel(bounds, total)
+    local panel_h = math.min(span[2] - span[1], page_h * 3)
+    local panel = Blitbuffer.new(page_w, math.max(1, panel_h), Blitbuffer.TYPE_BB8)
+    panel:fill(Blitbuffer.COLOR_WHITE)
+    for i = 1, #strips do
+        local s0, s1 = tops[i], tops[i] + heights[i]
+        if s1 > span[1] and s0 < span[1] + panel_h then
+            local bb = RenderImage:renderImageData(strips[i], #strips[i], false)
+            if bb then
+                bb = toGray(bb)
+                local from = math.max(0, span[1] - s0)
+                local to_y = math.max(0, s0 - span[1])
+                panel:blitFrom(bb, 0, to_y, 0, from, page_w, math.min(heights[i] - from, panel_h - to_y))
+                bb:free()
+            end
+        end
+    end
+    local series = opts.series or "Webtoon"
+    local cover = drawCover(page_w, page_h, panel, series, ep.no, Source.shortTitle(ep.title))
+    panel:free()
+    local cover_jpg = encodeJpeg(cover, tmpjpg)
+    cover:free()
+
+    local name = string.format("%03d - %s.cbz", ep.no, Source.safeName(ep.title))
+    local path = dir .. "/" .. name
+    local w = Archiver.Writer:new()
+    if not w:open(path .. ".part", "zip") then return nil, "cannot write " .. path end
+    w:setZipCompression("store")
+    w:addFileFromMemory("001.jpg", cover_jpg)
+    for i, d in ipairs(strips) do w:addFileFromMemory(string.format("%03d.jpg", i + 1), d) end
+    local title = series .. " " .. ep.title
+    w:addFileFromMemory("ComicInfo.xml", "<?xml version='1.0'?><ComicInfo><Title>"
+        .. title:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;") .. "</Title></ComicInfo>")
+    w:addFileFromMemory("kowebtoon.json", json.encode({
+        kowebtoon = 1, title = title, width = page_w, first_page = 2, gaps = gaps }))
+    w:close()
+    os.rename(path .. ".part", path)
+    lfs.rmdir(tmpdir)
+    return path
+end
+
+return M
