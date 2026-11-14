@@ -26,6 +26,25 @@ lagging mess.
 that **the next panel starts at the top of your screen**: a couple of quick frames for motion,
 then one crisp refresh. No panel or bubble is ever split.
 
+## Find, download, keep reading: all on the device
+
+<p align="center">
+  <img src="docs/library.png" alt="Four e-reader screens: searching for a webtoon, picking a series from the results, the series page with download buttons and per-episode read marks, and the one-tap 'Download next 5' prompt at the end of the last downloaded episode">
+</p>
+
+1. **Search.** *Menu → Webtoons → Search webtoons…* and type a name. Results list the author, and
+   fan-made Canvas series are marked as such.
+2. **Pick a series.** You get every free episode, newest first, with ✓ read, a % for the one
+   you're in, ↓ downloaded and … queued.
+3. **Download.** *Download next 5 episodes*, *Download a range…* (up to 10 at a time) or tap any
+   single episode. Downloads run in the background, so you can keep reading; a notification
+   pops up as each one lands, and they appear in `Webtoons/<Series>/`.
+4. **Keep going.** Finish the last episode you have and the plugin offers to **download the next
+   5** in one tap. Tap again once the first one lands to carry on. *Check for new episodes* looks
+   at every series you have and offers the same one-tap download for each.
+
+Each episode takes about 45 seconds on a Kindle Paperwhite, mostly downloading.
+
 ## Why you'll like it
 
 - 📲 **Find and download on the device.** Search webtoons.com from KOReader, pick a series, and
@@ -33,7 +52,7 @@ then one crisp refresh. No panel or bubble is ever split.
 - 🎯 **Panel snap.** Each tap lands just above the next panel's top, with a little breathing
   room, so you never start mid-panel and never stare at a screen of blank gutter.
 - 📐 **Fit-to-height.** A panel only slightly taller than the screen (up to 12%) is shrunk to fit,
-  instead of being split across two screens.
+  instead of being split across two screens. Works for on-device downloads and the converter.
 - 🌗 **Adaptive margins.** The space beside each panel takes the colour of the art's edge, so dark
   scenes don't get white bars.
 - ⚡ **Fast on e-ink.** Strips are pre-sized to your screen and the next ones are drawn while you
@@ -48,7 +67,8 @@ then one crisp refresh. No panel or bubble is ever split.
 - 🔄 **Plays well with sync.** Deliver the same files to your reader *and* a library server
   (BookOrbit, Calibre-Web, ...) and reading progress follows you.
 - 📖 **A library that remembers.** Your series, with ✓ read, ↓ downloaded and % progress on every
-  episode, plus "download next 5 unread" and "check for new episodes".
+  episode, plus one-tap "download next 5" (from the library, the reader menu, or the end of your
+  last episode) and "check for new episodes" across all of them.
 - 🖐️ **Gesture-friendly.** "Next panel", "previous panel", "library" and "check for new
   episodes" can be mapped to any gesture or button in KOReader.
 - 🧘 **Leaves your books alone.** It only activates on webtoon episodes.
@@ -72,7 +92,7 @@ then one crisp refresh. No panel or bubble is ever split.
 
 **2. Get some webtoons**
 
-On the device: **Menu → Webtoons → Search webtoons…**, pick a series, then *Download next 5 unread*
+On the device: **Menu → Webtoons → Search webtoons…**, pick a series, then *Download next 5 episodes*
 (or any range, up to 10 at a time). Episodes appear in `Webtoons/<Series>/` in your home folder as
 they finish. Open one and tap.
 
@@ -154,7 +174,7 @@ you read.
 </details>
 
 <details>
-<summary><b>Settings</b> (KOReader menu → Webtoon scroll)</summary>
+<summary><b>Settings</b> (KOReader menu → Webtoons)</summary>
 
 | Setting | Default | |
 | --- | --- | --- |
@@ -206,6 +226,7 @@ Issues and PRs welcome. To develop:
 pip install -e .
 python -m unittest discover -s tests -v
 python docs/make_demo_gif.py      # regenerates the demo (original art, drawn in code)
+python docs/make_library_png.py   # regenerates the library walkthrough
 ```
 
 ## Credits

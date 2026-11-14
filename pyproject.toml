@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kowebtoon"
-version = "0.3.0"
+version = "0.4.0"
 description = "Webtoons to e-ink friendly CBZs for KOReader, with panel maps for webtoon.koplugin"
 readme = "README.md"
 license = { text = "MIT" }

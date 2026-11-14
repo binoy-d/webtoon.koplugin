@@ -404,6 +404,23 @@ function Webtoon:prefetch()
     end
 end
 
+--- end of the last downloaded episode: one tap to fetch the next five
+function Webtoon:offerMore(dir)
+    dir = dir:gsub("/$", "")
+    local Library = self:library()
+    if next(Library:queuedIn(dir)) then
+        UIManager:show(Notification:new{ text = _("Next episodes are still downloading. Tap again when they're ready.") })
+        return
+    end
+    local ConfirmBox = require("ui/widget/confirmbox")
+    UIManager:show(ConfirmBox:new{
+        text = _("That was the last downloaded episode.") .. "\n\n" .. _("Download the next 5 in the background?"),
+        ok_text = _("Download next 5"),
+        cancel_text = _("Not now"),
+        ok_callback = function() Library:downloadNext(dir, 5) end,
+    })
+end
+
 --- step = 1: next episode from its start; step = -1: previous episode, opened at its end
 function Webtoon:neighbourEpisode(step)
     if not self:cfg("auto_next") then return true end
@@ -417,8 +434,11 @@ function Webtoon:neighbourEpisode(step)
         if f == name then
             local other = files[i + step]
             if not other then
-                UIManager:show(Notification:new{ text = step > 0 and _("That was the last downloaded episode.")
-                    or _("This is the first downloaded episode.") })
+                if step < 0 then
+                    UIManager:show(Notification:new{ text = _("This is the first downloaded episode.") })
+                else
+                    self:offerMore(dir)
+                end
                 return true
             end
             local label = other:gsub("%.cbz$", ""):gsub("^%d+%s*%-%s*", "")
@@ -439,7 +459,10 @@ function Webtoon:addToMainMenu(menu_items)
         sub_item_table = {
             { text = _("Library"), callback = function() self:library():showHome() end },
             { text = _("Search webtoons…"), callback = function() self:library():askSearch() end },
-            { text = _("Check for new episodes"), callback = function() self:library():checkNew() end,
+            { text = _("Check for new episodes"), callback = function() self:library():checkNew() end },
+            { text = _("Download next 5 of this series"),
+              enabled_func = function() return self.active == true end,
+              callback = function() self:library():downloadNext((util.splitFilePathName(self.file)):gsub("/$", ""), 5) end,
               separator = true },
             {
                 text_func = function()

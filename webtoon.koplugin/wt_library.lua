@@ -92,6 +92,20 @@ local function readState(path)
     return nil
 end
 
+--- the next `n` episodes after the newest one downloaded (or read), skipping queued ones
+local function nextAfter(eps, have, queued, n)
+    local from = 0
+    for no in pairs(have) do from = math.max(from, no) end
+    local list = {}
+    for __, ep in ipairs(eps) do
+        if ep.no > from and not have[ep.no] and not (queued and queued[ep.no]) then
+            table.insert(list, ep)
+            if #list >= n then break end
+        end
+    end
+    return list
+end
+
 -- run fn in a subprocess behind a dismissable "please wait" message
 local function fetch(msg, fn)
     local done, a, b = Trapper:dismissableRunInSubprocess(fn, msg)
@@ -191,22 +205,11 @@ end
 
 function Library:renderSeries(series)
     local have = downloaded(series.dir)
-    local queued = {}
-    for __, q in ipairs(self.queue) do if q.dir == series.dir then queued[q.ep.no] = true end end
-    for __, it in ipairs(self.job and self.job.items or {}) do if it.dir == series.dir then queued[it.ep.no] = true end end
-
-    local function unread_after()
-        local list, last_read = {}, 0
-        for no, path in pairs(have) do if readState(path) == "done" then last_read = math.max(last_read, no) end end
-        for __, ep in ipairs(series.eps) do
-            if ep.no > last_read and not have[ep.no] and not queued[ep.no] then table.insert(list, ep) end
-        end
-        return list
-    end
+    local queued = self:queuedIn(series.dir)
 
     local items = {
-        { text = T(_("⬇  Download next %1 unread"), 5), callback = function()
-            self:enqueue(series, { unpack(unread_after(), 1, 5) })
+        { text = T(_("⬇  Download next %1 episodes"), 5), callback = function()
+            self:enqueue(series, nextAfter(series.eps, have, queued, 5))
         end },
         { text = _("⬇  Download a range…"), callback = function() self:askRange(series) end },
     }
@@ -367,7 +370,48 @@ function Library:poll()
     UIManager:scheduleIn(2, function() self:poll() end)
 end
 
---- for every series: queue episodes newer than the newest downloaded one (up to MAX_BATCH)
+function Library:queuedIn(dir)
+    local q = {}
+    for __, it in ipairs(self.queue) do if it.dir == dir then q[it.ep.no] = true end end
+    for __, it in ipairs(self.job and self.job.items or {}) do if it.dir == dir then q[it.ep.no] = true end end
+    return q
+end
+
+--- one tap: fetch the episode list and queue the next `n` after what's downloaded
+-- series: a series dir, or a {dir, url, title} table
+function Library:downloadNext(series, n)
+    n = n or 5
+    if type(series) == "string" then
+        local meta = readJSON(series .. "/" .. SERIES_FILE)
+        if not (meta and meta.url) then
+            UIManager:show(InfoMessage:new{ text = _("This folder wasn't downloaded with the Webtoons library, so I don't know where to get more episodes. Search for the series once to link it.") })
+            return
+        end
+        meta.dir = series
+        meta.title = meta.title or series:match("([^/]+)/?$")
+        series = meta
+    end
+    NetworkMgr:runWhenOnline(function()
+        Trapper:wrap(function()
+            local have = downloaded(series.dir)
+            local newest = 0
+            for no in pairs(have) do newest = math.max(newest, no) end
+            local __, eps = fetch(T(_("Checking %1…"), series.title), function() return Source.episodes(series.url, newest) end)
+            if type(eps) ~= "table" then
+                if eps ~= "cancelled" then UIManager:show(InfoMessage:new{ text = T(_("Couldn't reach webtoons.com: %1"), tostring(eps)) }) end
+                return
+            end
+            local list = nextAfter(eps, have, self:queuedIn(series.dir), n)
+            if #list == 0 then
+                UIManager:show(InfoMessage:new{ text = T(_("No newer free episodes of %1 yet."), series.title), timeout = 3 })
+                return
+            end
+            self:enqueue(series, list)
+        end)
+    end)
+end
+
+--- for every series: show what's new, one tap to download the next 5 of each
 function Library:checkNew()
     local all = self:allSeries()
     if #all == 0 then
@@ -376,23 +420,46 @@ function Library:checkNew()
     end
     NetworkMgr:runWhenOnline(function()
         Trapper:wrap(function()
-            local found = 0
+            local items, total, failed = {}, 0, {}
             for __, s in ipairs(all) do
+                local have = downloaded(s.dir)
                 local newest = 0
-                for no in pairs(downloaded(s.dir)) do newest = math.max(newest, no) end
+                for no in pairs(have) do newest = math.max(newest, no) end
                 local __, eps = fetch(T(_("Checking %1…"), s.title), function() return Source.episodes(s.url, newest) end)
-                if type(eps) == "table" then
-                    local fresh = {}
-                    for __, ep in ipairs(eps) do if ep.no > newest then table.insert(fresh, ep) end end
+                if eps == "cancelled" then return end
+                if type(eps) ~= "table" then
+                    table.insert(failed, s.title .. ": " .. tostring(eps))
+                else
+                    local fresh = nextAfter(eps, have, self:queuedIn(s.dir), math.huge)
                     if #fresh > 0 then
-                        found = found + #fresh
-                        self:enqueue(s, fresh)
+                        total = total + #fresh
+                        s.eps = eps
+                        table.insert(items, { text = T(_("⬇  %1"), s.title),
+                            mandatory = T(_("%1 new · get next %2"), #fresh, math.min(5, #fresh)),
+                            callback = function() self:enqueue(s, { unpack(fresh, 1, 5) }); self:checkNewDone(s) end,
+                            hold_callback = function() self:showSeries(s) end })
                     end
                 end
             end
-            if found == 0 then UIManager:show(InfoMessage:new{ text = _("You're all caught up."), timeout = 3 }) end
+            if #failed > 0 then
+                UIManager:show(InfoMessage:new{ text = _("Couldn't check:") .. "\n" .. table.concat(failed, "\n") })
+            end
+            if total == 0 then
+                if #failed == 0 then UIManager:show(InfoMessage:new{ text = _("You're all caught up."), timeout = 3 }) end
+                return
+            end
+            if #items > 1 then
+                table.insert(items, 1, { text = T(_("⬇  Download next 5 of every series")), callback = function()
+                    for i = 2, #items do items[i].callback() end
+                end })
+            end
+            self:openMenu(T(_("%1 new episodes"), total), items)
         end)
     end)
+end
+
+function Library:checkNewDone(s)
+    if self.menu then UIManager:close(self.menu); self.menu = nil end
 end
 
 return Library

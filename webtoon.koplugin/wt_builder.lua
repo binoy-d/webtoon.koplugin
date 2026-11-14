@@ -13,6 +13,7 @@ local TextWidget = require("ui/widget/textwidget")
 local ffi = require("ffi")
 local json = require("json")
 local lfs = require("libs/libkoreader-lfs")
+local logger = require("logger")
 local Source = require("wt_source")
 
 local M = {}
@@ -32,6 +33,27 @@ local function toGray(bb)
     return g
 end
 
+-- centre bb (freed) on a page_w-wide strip; each row's margins take the colour of that row's
+-- edge pixels: white gutters get white margins, dark full-bleed scenes get dark ones
+local function padSides(bb, page_w)
+    local art_w, h = bb:getWidth(), bb:getHeight()
+    local left = math.floor((page_w - art_w) / 2)
+    local right = page_w - art_w - left
+    local out = Blitbuffer.new(page_w, h, Blitbuffer.TYPE_BB8)
+    out:blitFrom(bb, left, 0)
+    bb:free()
+    local base, stride = ffi.cast("uint8_t*", out.data), tonumber(out.stride)
+    local k = math.min(3, art_w)
+    for y = 0, h - 1 do
+        local row = base + y * stride
+        local l, r = 0, 0
+        for i = 0, k - 1 do l = l + row[left + i]; r = r + row[left + art_w - 1 - i] end
+        ffi.fill(row, left, math.floor(l / k))
+        ffi.fill(row + left + art_w, right, math.floor(r / k))
+    end
+    return out
+end
+
 -- decode -> grey -> art width -> centred on a white page-width strip
 local function prepareStrip(data, page_w, art_w)
     local bb = RenderImage:renderImageData(data, #data, false)
@@ -42,24 +64,7 @@ local function prepareStrip(data, page_w, art_w)
         bb = toGray(RenderImage:scaleBlitBuffer(bb, art_w, h, true))
     end
     if art_w == page_w then return bb end
-    local h = bb:getHeight()
-    local left = math.floor((page_w - art_w) / 2)
-    local right = page_w - art_w - left
-    local out = Blitbuffer.new(page_w, h, Blitbuffer.TYPE_BB8)
-    out:blitFrom(bb, left, 0)
-    bb:free()
-    -- each row's margins take the colour of that row's edge pixels: white gutters get white
-    -- margins, dark full-bleed scenes get dark ones (no white bars beside night scenes)
-    local base, stride = ffi.cast("uint8_t*", out.data), tonumber(out.stride)
-    for y = 0, h - 1 do
-        local row = base + y * stride
-        local l = math.floor((row[left] + row[left + 1] + row[left + 2]) / 3)
-        local r0 = left + art_w - 3
-        local r = math.floor((row[r0] + row[r0 + 1] + row[r0 + 2]) / 3)
-        ffi.fill(row, left, l)
-        ffi.fill(row + left + art_w, right, r)
-    end
-    return out
+    return padSides(bb, page_w)
 end
 
 -- one boolean per row: is it blank?
@@ -123,6 +128,97 @@ local function drawCover(page_w, page_h, panel_bb, series, ep_no, ep_title)
     return cover
 end
 
+local FIT_REDUCTION = 0.12  -- shrink panels at most this much to fit them on one screen
+
+--- Panels only slightly taller than the screen are shrunk to fit on one screen (like the desktop
+-- converter). Works on the encoded strips: only strips that touch a fitted panel are decoded and
+-- re-cut, the rest are kept as they are. Returns strips, heights, blank, panels_fitted.
+local function fitPanels(strips, heights, blank, page_w, page_h, min_run, tmpjpg)
+    local tops, total = {}, 0
+    for i, h in ipairs(heights) do tops[i] = total; total = total + h end
+    local target = math.floor(page_h * 0.97)            -- a sliver of breathing room
+    local limit = target / (1 - FIT_REDUCTION)
+    -- panels: [end of one blank run, start of the next)
+    local fits, prev, y = {}, 0, 1
+    local function consider(a, b)
+        if b - a > target and b - a <= limit then table.insert(fits, { a, b }) end
+    end
+    while y <= total do
+        if blank[y] then
+            local st = y
+            while y <= total and blank[y] do y = y + 1 end
+            if y - st >= min_run then consider(prev, st - 1); prev = y - 1 end
+        else
+            y = y + 1
+        end
+    end
+    consider(prev, total)
+    if #fits == 0 then return strips, heights, blank, 0 end
+
+    -- rows [a, b) of the episode as one buffer, decoding strips on demand (keeps the last two)
+    local cache = {}
+    local function strip(i)
+        for __, c in ipairs(cache) do if c.i == i then return c.bb end end
+        local bb = toGray(RenderImage:renderImageData(strips[i], #strips[i], false))
+        table.insert(cache, 1, { i = i, bb = bb })
+        if #cache > 2 then table.remove(cache).bb:free() end
+        return bb
+    end
+    local function rows(a, b)
+        local out = Blitbuffer.new(page_w, b - a, Blitbuffer.TYPE_BB8)
+        for i = 1, #strips do
+            local s0, s1 = tops[i], tops[i] + heights[i]
+            if s1 > a and s0 < b then
+                local from, to = math.max(a, s0), math.min(b, s1)
+                out:blitFrom(strip(i), 0, from - a, 0, from - s0, page_w, to - from)
+            end
+        end
+        return out
+    end
+
+    local new_strips, new_heights, new_blank = {}, {}, {}
+    local function emit(bb, blank_from)
+        local h = bb:getHeight()
+        if blank_from then
+            for r = 1, h do new_blank[#new_blank + 1] = blank[blank_from + r] end
+        else
+            blankRows(bb, new_blank)
+        end
+        new_heights[#new_heights + 1] = h
+        new_strips[#new_strips + 1] = encodeJpeg(bb, tmpjpg)
+        bb:free()
+    end
+    -- plain rows [a, b): whole strips are kept as-is, partial ones are cropped
+    local function plain(a, b)
+        for i = 1, #strips do
+            local s0, s1 = tops[i], tops[i] + heights[i]
+            if s1 > a and s0 < b then
+                if s0 >= a and s1 <= b then
+                    new_strips[#new_strips + 1] = strips[i]
+                    new_heights[#new_heights + 1] = heights[i]
+                    for r = s0 + 1, s1 do new_blank[#new_blank + 1] = blank[r] end
+                else
+                    local from, to = math.max(a, s0), math.min(b, s1)
+                    emit(rows(from, to), from)
+                end
+            end
+        end
+    end
+    local at = 0
+    for __, f in ipairs(fits) do
+        local a, b = f[1], f[2]
+        if a > at then plain(at, a) end
+        local panel = rows(a, b)
+        local k = target / (b - a)
+        local small = toGray(RenderImage:scaleBlitBuffer(panel, math.max(1, math.floor(page_w * k + 0.5)), target, true))
+        emit(padSides(small, page_w))
+        at = b
+    end
+    if at < total then plain(at, total) end
+    for __, c in ipairs(cache) do c.bb:free() end
+    return new_strips, new_heights, new_blank, #fits
+end
+
 --- Build `<dir>/<NNN> - <title>.cbz`.
 -- opts: page_w, page_h, margin (fraction per side), series, progress(fn(done, total))
 function M.build(ep, dir, opts)
@@ -148,10 +244,17 @@ function M.build(ep, dir, opts)
         if opts.progress then opts.progress(i, #urls) end
     end
 
+    local min_run = math.max(8, math.floor(page_w / 60))
+    if opts.fit ~= false then
+        local fitted
+        strips, heights, blank, fitted = fitPanels(strips, heights, blank, page_w, page_h, min_run, tmpjpg)
+        if fitted > 0 then logger.info("webtoon: fitted", fitted, "panel(s) to the screen") end
+    end
+
     -- gaps between panels: centres of long-enough blank runs, as {page, fraction}; page 1 = cover
     local tops, acc = {}, 0
     for i, h in ipairs(heights) do tops[i] = acc; acc = acc + h end
-    local total, min_run = acc, math.max(8, math.floor(page_w / 60))
+    local total = acc
     local gaps, bounds, y = {}, { 0 }, 1
     local function locate(g)
         local p = #tops
