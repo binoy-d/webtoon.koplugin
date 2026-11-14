@@ -156,7 +156,7 @@ def _zip_jpegs(path, images, title, extra=None):
             im.save(buf, "JPEG", quality=85, optimize=True)
             z.writestr(f"{i:03d}.jpg", buf.getvalue())
         z.writestr("ComicInfo.xml", "<?xml version='1.0'?><ComicInfo>"
-                                    f"<Title>{html.escape(title)}</Title></ComicInfo>")
+                                    f"<Title>{html.escape(title, quote=False)}</Title></ComicInfo>")
         for name, data in (extra or {}).items():
             z.writestr(name, data)
     os.replace(tmp, path)

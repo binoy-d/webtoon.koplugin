@@ -1,116 +1,182 @@
-# koreader-webtoon
+<p align="center">
+  <img src="docs/demo.gif" width="300" alt="Simulated e-reader: each tap glides the webtoon so the next panel lands at the top, with e-ink style fast frames and a clean refresh">
+</p>
 
-Read webtoons on an e-ink reader the way they're meant to be read: one long vertical strip,
-not chopped into pages that slice through panels and speech bubbles.
+<h1 align="center">webtoon.koplugin</h1>
 
-Two parts that work together:
+<p align="center">
+  <b>Webtoons on e-ink, read the way they're drawn: one long strip, one panel at a time.</b><br>
+  A <a href="https://koreader.rocks">KOReader</a> plugin + a converter for Kindle, Kobo, PocketBook and friends.
+</p>
 
-- **`webtoon.koplugin`**: a [KOReader](https://koreader.rocks) plugin. Each tap glides the strip
-  up so the next panel lands at the top of the screen, pre-renders what's below, and opens the
-  next episode when you reach the end.
-- **`kowebtoon`**: a command-line converter. It turns webtoons.com episodes into CBZs made for
-  e-ink (screen-width, 16 grey levels, a title cover) with a map of where every gap between
-  panels is, and copies them to your reader.
+<p align="center">
+  <a href="https://github.com/binoy-d/webtoon.koplugin/actions"><img src="https://github.com/binoy-d/webtoon.koplugin/actions/workflows/test.yml/badge.svg" alt="tests"></a>
+  <img src="https://img.shields.io/badge/KOReader-plugin-black" alt="KOReader plugin">
+  <img src="https://img.shields.io/badge/e--ink-friendly-lightgrey" alt="e-ink friendly">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT"></a>
+</p>
 
-## How it reads
+---
 
-- **Tap forward:** a short glide (2 fast frames, then one clean refresh) to the last gap between
-  panels that was on screen. You never start reading mid-panel.
-- **Tap back:** the same, upwards.
-- **Panels taller than the screen** scroll about 85% at a time, with a little overlap.
-- **Swipe** to scroll freely.
-- **End of an episode:** "Next: Ep. 4" and it opens.
-- **First open** switches the episode to continuous view, page-width zoom, no page gaps, and
-  skips the cover. Your books are untouched.
+Webtoons are made for scrolling on a phone. Cut them into pages and you get panels sliced in half
+and speech bubbles split between two screens. Scroll them on e-ink and you get a smeary,
+lagging mess.
 
-E-ink can't do smooth 60 fps scrolling. The glide is designed around that: a couple of quick
-black-and-white frames for motion, then one proper greyscale refresh, plus a full flash every
-20 taps to clear ghosting. Everything is adjustable in **Settings → Webtoon scroll**.
+**webtoon.koplugin** does something in between. Every tap glides the strip up just far enough
+that **the next panel starts at the top of your screen**: a couple of quick frames for motion,
+then one crisp refresh. No panel or bubble is ever split.
 
-## Install
+## Why you'll like it
 
-### 1. The plugin
+- 🎯 **Panel snap.** Taps land on the gaps between panels, never mid-panel.
+- ⚡ **Fast on e-ink.** Strips are pre-sized to your screen and the next ones are drawn while you
+  read, so each tap is quick.
+- 👻 **Less ghosting.** Clean refreshes, plus a full flash every 20 taps (adjustable).
+- 📚 **Binge mode.** Hit the end of an episode and the next one opens.
+- 🖼️ **Real covers.** Each episode gets a cover with the series, episode number and title, so
+  your library looks great in the cover browser.
+- 🔄 **Plays well with sync.** Deliver the same files to your reader *and* a library server
+  (BookOrbit, Calibre-Web, ...) and reading progress follows you.
+- 🧘 **Leaves your books alone.** It only activates on webtoon episodes.
 
-Copy `webtoon.koplugin/` into KOReader's `plugins/` folder and restart KOReader:
+## Quick start
 
-| Device | Plugins folder |
-| --- | --- |
-| Kindle | `/mnt/us/koreader/plugins/` (USB: `koreader/plugins/`) |
-| Kobo | `.adds/koreader/plugins/` |
-| PocketBook | `applications/koreader/plugins/` |
-| Android | `koreader/plugins/` in internal storage |
+**1. Install the plugin**
 
-### 2. The converter
+- **From KOReader:** with the [App Store plugin](https://github.com/omer-faruq/appstore.koplugin),
+  search for *webtoon* and tap Install.
+- **By hand:** download this repo, copy the `webtoon.koplugin` folder into KOReader's `plugins/`
+  folder, restart KOReader.
 
-Python 3.9 or newer:
+  | Device | Plugins folder |
+  | --- | --- |
+  | Kindle | `koreader/plugins/` |
+  | Kobo | `.adds/koreader/plugins/` |
+  | PocketBook | `applications/koreader/plugins/` |
+  | Android | `koreader/plugins/` |
+
+**2. Install the converter** (on your computer, Python 3.9+)
 
 ```bash
-pipx install git+https://github.com/binoy-d/koreader-webtoon
-# or: pip install git+https://github.com/binoy-d/koreader-webtoon
+pipx install git+https://github.com/binoy-d/webtoon.koplugin
 ```
 
-## Use
-
-Tell it your device and where episodes should go (once):
+**3. Get episodes onto your reader**
 
 ```bash
-kowebtoon devices                                   # list screen presets
 kowebtoon config --device kindle-pw5 --to /Volumes/Kindle/koreader-books/Webtoons
-```
-
-`--to` is a folder on the plugged-in reader, or `ssh://user@host:port/path` if you run an
-SSH server on it (for example KOReader's built-in one). Repeat `--to` to deliver the same files
-to several places, e.g. your reader *and* the library folder of a book server that syncs with
-KOReader (BookOrbit, Calibre-Web, ...). Identical files mean reading progress can sync between
-them. If one destination is unreachable (reader asleep), the others still get the episodes;
-send them again later with `--resend`.
-
-Grab episodes:
-
-```bash
 kowebtoon get "https://www.webtoons.com/en/<genre>/<series>/list?title_no=<id>" --episodes 1-10
 ```
 
-Follow series and pick up new episodes whenever you like (or from cron):
+Open an episode in KOReader and tap. That's it: the first open sets up continuous view for you.
+
+## Keep up with a series
 
 ```bash
 kowebtoon follow "https://www.webtoons.com/en/<genre>/<series>/list?title_no=<id>"
-kowebtoon sync
+kowebtoon sync          # grabs anything new; run it whenever, or from cron
 ```
 
-Each episode becomes `<Series>/<NNN> - <Episode title>.cbz`, with a cover showing the series,
-episode number and title, so it looks right in KOReader's cover browser.
+<details>
+<summary><b>All converter options</b></summary>
 
-No plugin? Use `--format pages` for pre-cut, screen-shaped pages that work in any reader. Cuts
-only happen in gaps between panels, and a panel up to twice the screen height gets its own page.
+| Command | What it does |
+| --- | --- |
+| `kowebtoon get URL --episodes 1-10` | Grab episodes (`1-10`, `3,5,8`, `latest`, or all) |
+| `kowebtoon follow URL` / `unfollow NAME` | Remember a series for `sync` |
+| `kowebtoon sync` | Grab new episodes of everything you follow |
+| `kowebtoon list` | Show followed series |
+| `kowebtoon devices` | Screen presets (Kindle, Kobo, PocketBook, reMarkable...) |
+| `kowebtoon config --device ... --to ...` | Save defaults |
 
-## How the converter finds panels
+**Destinations (`--to`, repeatable):** a folder on the plugged-in reader, or
+`ssh://user@host:port/path` (for example KOReader's own SSH server). Deliver to several places at
+once, e.g. your reader *and* a book server. Add `?layout=folders` to a destination to give every
+episode its own folder; servers like BookOrbit need that to list episodes as separate books.
+If one destination is offline, the others still get the files; send later with `--resend`.
 
-A row of pixels counts as a gap only if *every* pixel in it is blank. Checking every pixel
-matters: a speech bubble's one-pixel outline is enough to stop a cut, so no line of dialogue
-gets split. The gaps are stored in `kowebtoon.json` inside the CBZ (page number + position on
-the page), so they travel with the file however your KOReader stores its sidecars.
+**Other flags:** `--format pages` makes pre-cut, screen-shaped pages for readers without the
+plugin. `--width/--height` sets a custom screen size. `--no-cover` skips the cover, and `--force`
+rebuilds episodes you already have.
+</details>
 
-## Other webtoon CBZs
+## How it works
 
-Enable **Settings → Webtoon scroll → Glide on any tall comic** to get the glide (in fixed
-steps, without panel snapping) for webtoon CBZs from other tools.
+<details>
+<summary><b>Finding panels</b></summary>
+
+The converter stitches each episode into one strip and looks for rows where **every** pixel is
+blank. Checking every pixel matters: one pixel of a speech bubble's outline is enough to stop a
+cut, so dialogue never gets split. The gaps are saved as `kowebtoon.json` *inside* the CBZ, so
+they travel with the file however your KOReader stores its book settings.
+</details>
+
+<details>
+<summary><b>Gliding on e-ink</b></summary>
+
+E-ink can't do smooth 60 fps scrolling, so the plugin fakes the motion cheaply. It shows two
+fast black-and-white frames (like the dithered frames in the GIF above), then does one proper
+greyscale refresh on the landing spot. The landing spot is the last panel gap that was on screen,
+so you always start reading at the top of a whole panel. Panels taller than the screen scroll
+about 85% at a time, with a little overlap.
+
+Images are pre-sized to your exact screen width and reduced to the 16 grey levels e-ink can show,
+so KOReader never has to resize them, and the next strips are rendered in the background while
+you read.
+</details>
+
+<details>
+<summary><b>Settings</b> (KOReader menu → Webtoon scroll)</summary>
+
+| Setting | Default | |
+| --- | --- | --- |
+| Glide frames | 2 | Fewer = snappier, more = smoother |
+| Clean flash every | 20 taps | 10 / 20 / 40 / off |
+| Open next episode at the end | on | |
+| Glide on any tall comic | off | Glide (fixed steps, no snapping) for webtoon CBZs from other tools |
+</details>
+
+## FAQ
+
+<details>
+<summary><b>Does it work on Kobo / PocketBook / Android?</b></summary>
+It's a regular KOReader plugin with no device-specific code, so it should work anywhere KOReader
+runs. It's been tested on a Kindle Paperwhite 5. Reports from other devices are very welcome.
+</details>
+
+<details>
+<summary><b>Can I use webtoons I already have as CBZ files?</b></summary>
+Yes: turn on <i>Glide on any tall comic</i>. You get the glide in fixed steps. Panel snapping needs
+the gap map the converter adds.
+</details>
+
+<details>
+<summary><b>Will it change how my books read?</b></summary>
+No. It only acts on CBZs made by the converter (or tall comics, if you opt in). If anything goes
+wrong, the tap falls back to KOReader's normal page turn.
+</details>
+
+## Roadmap
+
+- Search, pick episodes and download **on the device**, in the background
+- Panel snapping for any webtoon CBZ, detected on the device
+- More sources
 
 ## Responsible use
 
-kowebtoon only fetches episodes that webtoons.com shows for free, for reading on your own
-device. Support the creators: read new episodes on WEBTOON too, and don't redistribute files.
+The converter only fetches episodes that webtoons.com shows for free, for reading on your own
+device. Please support the creators: read new episodes on WEBTOON too, and don't share the files.
 
-## Development
+## Contributing
+
+Issues and PRs welcome. To develop:
 
 ```bash
 pip install -e .
 python -m unittest discover -s tests -v
+python docs/make_demo_gif.py      # regenerates the demo (original art, drawn in code)
 ```
-
-The tests use synthetic images only. Plugin settings live in KOReader's `settings.reader.lua`
-under `webtoon`.
 
 ## License
 
-MIT
+[MIT](LICENSE)

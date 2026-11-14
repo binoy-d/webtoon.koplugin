@@ -15,7 +15,7 @@ dependencies = ["requests>=2.25", "Pillow>=10.1", "numpy>=1.21"]
 kowebtoon = "kowebtoon.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/binoy-d/koreader-webtoon"
+Homepage = "https://github.com/binoy-d/webtoon.koplugin"
 
 [tool.setuptools]
 packages = ["kowebtoon"]

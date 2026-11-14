@@ -11,7 +11,7 @@ Optionally (Settings > "Glide on any tall comic") plain webtoon CBZs get the gli
 fixed steps instead of panel snapping. Everything else is untouched, and any error falls back to
 KOReader's normal page turn.
 
-https://github.com/binoy-d/koreader-webtoon
+https://github.com/binoy-d/webtoon.koplugin
 ]]
 local Archiver = require("ffi/archiver")
 local Event = require("ui/event")
