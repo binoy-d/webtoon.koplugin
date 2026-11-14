@@ -27,10 +27,16 @@ local _ = require("gettext")
 local T = require("ffi/util").template
 
 local MIN_STEP = 0.2        -- never snap less than this fraction of a screen
+local GOOD_STEP = 0.4       -- ...and prefer gaps that move at least this far
 local FALLBACK_STEP = 0.85  -- no gap on screen (tall panel): scroll this much, keeping overlap
-local PREFETCH = 2          -- strips to pre-render below the screen
+local BREATHING = 0.025     -- land this fraction of a screen above the next panel's top
+local ANALYSIS_W = 320      -- px width for on-device panel detection of map-less webtoons
 
-local DEFAULTS = { frames = 2, flash_every = 20, auto_next = true, glide_tall = false, margin = 0.05, day_mode = true }
+local DEFAULTS = { frames = 2, flash_every = 20, auto_next = true, glide_tall = true, margin = 0.05,
+                   day_mode = true, preload = 2 }
+
+-- set when going back from the top of an episode: open that file at its end
+local open_at_end
 
 -- make this plugin's own modules (wt_*.lua) requireable, also from download subprocesses
 local plugin_dir = debug.getinfo(1, "S").source:match("^@(.*)/[^/]*$")
@@ -52,6 +58,10 @@ function Webtoon:init()
         title = _("Webtoons: library"), general = true })
     Dispatcher:registerAction("webtoon_check_new", { category = "none", event = "WebtoonCheckNew",
         title = _("Webtoons: check for new episodes"), general = true })
+    Dispatcher:registerAction("webtoon_next_panel", { category = "none", event = "WebtoonNextPanel",
+        title = _("Webtoons: next panel"), reader = true })
+    Dispatcher:registerAction("webtoon_prev_panel", { category = "none", event = "WebtoonPrevPanel",
+        title = _("Webtoons: previous panel"), reader = true })
     -- KOReader was quit while a webtoon was open: give night mode back in the file browser
     if not self.ui.document and G_reader_settings:isTrue("webtoon_restore_night") then
         UIManager:nextTick(function()
@@ -66,6 +76,8 @@ end
 function Webtoon:library() return require("wt_library") end
 function Webtoon:onWebtoonLibrary() self:library():showHome(); return true end
 function Webtoon:onWebtoonCheckNew() self:library():checkNew(); return true end
+function Webtoon:onWebtoonNextPanel() if self.active then pcall(self.glide, self, 1) end return true end
+function Webtoon:onWebtoonPrevPanel() if self.active then pcall(self.glide, self, -1) end return true end
 
 function Webtoon:cfg(key)
     local s = G_reader_settings:readSetting("webtoon") or {}
@@ -114,12 +126,117 @@ function Webtoon:onReaderReady()
     if not ok then logger.warn("webtoon: reading map failed:", map); map = nil end
     if not map and not (self:cfg("glide_tall") and looksTall(doc)) then return end
 
-    self.map, self.file, self.glides, self.cache = map, doc.file, 0, nil
+    self.file, self.glides, self.cache = doc.file, 0, nil
+    if not map then
+        -- a webtoon from elsewhere: detect panels on the device, in the background, cached per book
+        local saved = self.ui.doc_settings:readSetting("webtoon_auto_map")
+        map = (type(saved) == "table" and saved.v == ANALYSIS_W) and saved or { v = ANALYSIS_W, gaps = {}, done = {} }
+        self.auto = true
+    end
+    self.map = map
     self.active = true
     self:dayMode()
     self:firstOpenSetup()
     self:hookPaging()
-    logger.info("webtoon: active,", map and (#map.gaps .. " panel gaps") or "fixed steps")
+    if self.auto then UIManager:scheduleIn(1, function() self:analyzeStep() end) end
+    if open_at_end == doc.file then
+        open_at_end = nil
+        UIManager:scheduleIn(0.3, function() self:jumpToEnd() end)
+    end
+    logger.info("webtoon: active,", #map.gaps, "panel gaps", self.auto and "(detecting on device)" or "")
+end
+
+function Webtoon:jumpToEnd()
+    local doc = self.ui.document
+    self.ui:handleEvent(Event:new("GotoPage", doc:getPageCount()))
+    UIManager:nextTick(function()
+        local L = self:layout()
+        local view = self.ui.view
+        local top = view.page_states and view.page_states[1]
+        if not top then return end
+        local T = L.tops[top.page] + (top.visible_area.y - top.page_area.y)
+        local max_top = math.max(0, L.total - view.visible_area.h)
+        if max_top > T then self.ui.paging:onScrollPanRel(math.floor(max_top - T)) end
+        UIManager:setDirty(view.dialog, "full")
+    end)
+end
+
+-- On-device panel detection for webtoons without a kowebtoon map: render a page small, find
+-- blank row runs (every pixel within a few grey levels), record {page, centre, page, next-start}.
+-- Runs a page or two at a time between taps, nearest pages first, and caches the result.
+function Webtoon:analyzePage(p)
+    local Blitbuffer = require("ffi/blitbuffer")
+    local ffi = require("ffi")
+    local doc = self.ui.document
+    local d = doc:getNativePageDimensions(p)
+    if not d or d.w <= 0 then return end
+    local zoom = ANALYSIS_W / d.w
+    local tile = doc:renderPage(p, nil, zoom, 0, 1.0)
+    if not tile or not tile.bb then return end
+    local src = tile.bb
+    local bb = src
+    if src:getType() ~= Blitbuffer.TYPE_BB8 then
+        bb = Blitbuffer.new(src:getWidth(), src:getHeight(), Blitbuffer.TYPE_BB8)
+        bb:blitFrom(src)
+    end
+    local w, h = bb:getWidth(), bb:getHeight()
+    local base, stride = ffi.cast("uint8_t*", bb.data), tonumber(bb.stride)
+    local min_run = math.max(3, math.floor(w / 60))
+    local y = 0
+    while y < h do
+        local row, lo, hi, blank = base + y * stride, 255, 0, true
+        for x = 0, w - 1 do
+            local v = row[x]
+            if v < lo then lo = v end
+            if v > hi then hi = v end
+            if hi - lo > 6 then blank = false; break end
+        end
+        if blank then
+            local s = y
+            repeat
+                y = y + 1
+                if y >= h then break end
+                row, lo, hi = base + y * stride, 255, 0
+                local still = true
+                for x = 0, w - 1 do
+                    local v = row[x]
+                    if v < lo then lo = v end
+                    if v > hi then hi = v end
+                    if hi - lo > 6 then still = false; break end
+                end
+            until not still
+            if y - s >= min_run then
+                table.insert(self.map.gaps, { p, ((s + y) / 2) / h, p, math.min(y, h - 1) / h })
+            end
+        end
+        y = y + 1
+    end
+    if bb ~= src then bb:free() end
+end
+
+function Webtoon:analyzeStep()
+    if not self.active or not self.auto then return end
+    local doc, map = self.ui.document, self.map
+    local n = doc:getPageCount()
+    local cur = self.ui.paging and self.ui.paging.current_page or 1
+    local todo
+    for d = 0, n do                          -- nearest unanalysed page, ahead first
+        for _, p in ipairs({ cur + d, cur - d }) do
+            if p >= 1 and p <= n and not map.done[tostring(p)] then todo = p; break end
+        end
+        if todo then break end
+    end
+    if not todo then
+        self.ui.doc_settings:saveSetting("webtoon_auto_map", map)
+        logger.info("webtoon: on-device panel detection done,", #map.gaps, "gaps")
+        return
+    end
+    local ok, err = pcall(self.analyzePage, self, todo)
+    if not ok then logger.warn("webtoon: analysing page", todo, "failed:", err) end
+    map.done[tostring(todo)] = true
+    table.sort(map.gaps, function(a, b) return a[1] < b[1] or (a[1] == b[1] and a[2] < b[2]) end)
+    self.cache = nil
+    UIManager:scheduleIn(0.15, function() self:analyzeStep() end)
 end
 
 -- Night mode inverts the art, so webtoons read in day mode (setting "day_mode", on by default).
@@ -147,6 +264,7 @@ end
 function Webtoon:onCloseDocument()
     if not self.active then return end
     self.active = false
+    if self.auto and self.map then self.ui.doc_settings:saveSetting("webtoon_auto_map", self.map) end
     if G_reader_settings:isTrue("webtoon_restore_night") then
         pending_restore = restoreNight
         UIManager:scheduleIn(1.5, restoreNight)
@@ -198,10 +316,19 @@ function Webtoon:layout()
         heights[p] = doc:getPageDimensions(p, zoom, rot).h
         acc = acc + heights[p] + gap
     end
+    -- each gap: centre (for "have I seen everything above it?") and land (just above the next
+    -- panel's top, so long blank stretches don't fill the screen)
     local abs = {}
     for _, g in ipairs(self.map and self.map.gaps or {}) do
         local p, frac = g[1], g[2]
-        if tops[p] then table.insert(abs, tops[p] + frac * heights[p]) end
+        if tops[p] then
+            local centre = tops[p] + frac * heights[p]
+            local land = centre
+            if g[3] and tops[g[3]] then
+                land = math.max(centre, tops[g[3]] + g[4] * heights[g[3]] - BREATHING * view.visible_area.h)
+            end
+            table.insert(abs, { centre = centre, land = land })
+        end
     end
     self.cache = { zoom = zoom, rot = rot, tops = tops, total = acc - gap, gaps = abs }
     return self.cache
@@ -220,15 +347,21 @@ function Webtoon:glide(diff)
 
     local target
     if diff > 0 then
-        if T >= max_top - 2 then return self:nextEpisode() end
-        for _, g in ipairs(L.gaps) do          -- last gap still on screen
-            if g > T + MIN_STEP * H and g <= T + H then target = g end
+        if T >= max_top - 2 then return self:neighbourEpisode(1) end
+        -- the last gap whose centre is still on screen: everything above it has been seen.
+        -- Prefer one that moves a decent amount; settle for a short hop over cutting a panel.
+        local good, short
+        for _, g in ipairs(L.gaps) do
+            if g.centre <= T + H then
+                if g.land > T + GOOD_STEP * H then good = g.land
+                elseif g.land > T + MIN_STEP * H then short = g.land end
+            end
         end
-        target = math.min(target or (T + FALLBACK_STEP * H), max_top)
+        target = math.min(good or short or (T + FALLBACK_STEP * H), max_top)
     else
-        if T <= first_top + 2 then return true end
-        for _, g in ipairs(L.gaps) do          -- earliest gap within one screen above
-            if g >= T - H and g < T - MIN_STEP * H then target = g; break end
+        if T <= first_top + 2 then return self:neighbourEpisode(-1) end
+        for _, g in ipairs(L.gaps) do          -- earliest landing within one screen above
+            if g.land >= T - H and g.land < T - MIN_STEP * H then target = g.land; break end
         end
         target = math.max(target or (T - FALLBACK_STEP * H), first_top)
     end
@@ -266,12 +399,13 @@ function Webtoon:prefetch()
     local states = view.page_states
     if not (states and #states > 0 and doc.hintPage) then return end
     local last = states[#states].page
-    for p = last + 1, math.min(doc:getPageCount(), last + PREFETCH) do
+    for p = last + 1, math.min(doc:getPageCount(), last + self:cfg("preload")) do
         pcall(doc.hintPage, doc, p, view.state.zoom, view.state.rotation, view.state.gamma)
     end
 end
 
-function Webtoon:nextEpisode()
+--- step = 1: next episode from its start; step = -1: previous episode, opened at its end
+function Webtoon:neighbourEpisode(step)
     if not self:cfg("auto_next") then return true end
     local dir, name = util.splitFilePathName(self.file)
     local files = {}
@@ -280,15 +414,21 @@ function Webtoon:nextEpisode()
     end
     table.sort(files)
     for i, f in ipairs(files) do
-        if f == name and files[i + 1] then
-            local label = files[i + 1]:gsub("%.cbz$", ""):gsub("^%d+%s*%-%s*", "")
-            UIManager:show(Notification:new{ text = T(_("Next: %1"), label) })
-            local nxt = dir .. files[i + 1]
-            UIManager:nextTick(function() self.ui:switchDocument(nxt) end)
+        if f == name then
+            local other = files[i + step]
+            if not other then
+                UIManager:show(Notification:new{ text = step > 0 and _("That was the last downloaded episode.")
+                    or _("This is the first downloaded episode.") })
+                return true
+            end
+            local label = other:gsub("%.cbz$", ""):gsub("^%d+%s*%-%s*", "")
+            UIManager:show(Notification:new{ text = T(step > 0 and _("Next: %1") or _("Back to: %1"), label) })
+            local path = dir .. other
+            if step < 0 then open_at_end = path end
+            UIManager:nextTick(function() self.ui:switchDocument(path) end)
             return true
         end
     end
-    UIManager:show(Notification:new{ text = _("That was the last downloaded episode.") })
     return true
 end
 
@@ -337,6 +477,15 @@ function Webtoon:addToMainMenu(menu_items)
                 end,
             },
             {
+                text_func = function() return T(_("Pre-render ahead: %1 strips"), self:cfg("preload")) end,
+                help_text = _("Strips drawn in the background below the screen. More = quicker taps, more memory. Tap to cycle 1–4."),
+                keep_menu_open = true,
+                callback = function(tm)
+                    self:setCfg("preload", self:cfg("preload") % 4 + 1)
+                    if tm then tm:updateItems() end
+                end,
+            },
+            {
                 text = _("Turn off night mode for webtoons"),
                 help_text = _("Webtoon art reads best un-inverted. Night mode comes back when you leave the episode."),
                 checked_func = function() return self:cfg("day_mode") end,
@@ -348,8 +497,8 @@ function Webtoon:addToMainMenu(menu_items)
                 callback = function() self:setCfg("auto_next", not self:cfg("auto_next")) end,
             },
             {
-                text = _("Glide on any tall comic (no panel map)"),
-                help_text = _("Also glide through webtoon CBZs not made by kowebtoon, in fixed steps. Applies when a book is opened."),
+                text = _("Smart scrolling for any webtoon CBZ"),
+                help_text = _("Webtoon CBZs from other tools get the glide too; panels are detected on the device in the background and remembered per book. Applies when a book is opened."),
                 checked_func = function() return self:cfg("glide_tall") end,
                 callback = function() self:setCfg("glide_tall", not self:cfg("glide_tall")) end,
             },

@@ -67,6 +67,42 @@ class FormatTests(unittest.TestCase):
         self.assertLessEqual(len(set(im.getdata())), 16)
 
 
+class SmartTests(unittest.TestCase):
+    def test_map_records_where_next_panel_starts(self):
+        parts = [strip_with_panels()]
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ep.cbz")
+            render.make_scroll_cbz(parts, path, "t")
+            gaps = json.loads(zipfile.ZipFile(path).read("kowebtoon.json"))["gaps"]
+        # the gap between panels (400..600): centre ~500, next panel starts at 600
+        mid = [g for g in gaps if 0.25 < g[1] < 0.35]
+        self.assertTrue(mid, gaps)
+        self.assertAlmostEqual(mid[0][3] * 1620, 600, delta=3)
+
+    def test_slightly_tall_panel_is_fitted(self):
+        # screen 600x800 -> a 860px panel is ~7.5% too tall: must shrink to fit
+        im = strip_with_panels(panels=((100, 960),))
+        parts, fitted = render.fit_to_height([im], 600, 800)
+        self.assertEqual(fitted, 1)
+        spread, _ = render.row_profile(render.stack(parts))
+        runs = render.find_runs(spread, 600)
+        panel_h = runs[1][0] - runs[0][1]
+        self.assertLessEqual(panel_h, 800)
+
+    def test_very_tall_panel_is_left_alone(self):
+        im = strip_with_panels(panels=((100, 1500),))
+        _, fitted = render.fit_to_height([im], 600, 800)
+        self.assertEqual(fitted, 0)
+
+    def test_margins_follow_edge_colour(self):
+        dark = Image.new("L", (100, 50), 20)
+        out = render.pad_sides(dark, 120)
+        self.assertEqual(out.size, (120, 50))
+        self.assertLess(out.getpixel((2, 10)), 40)          # dark scene -> dark margin
+        light = render.pad_sides(Image.new("L", (100, 50), 250), 120)
+        self.assertGreater(light.getpixel((2, 10)), 240)
+
+
 class CliTests(unittest.TestCase):
     def test_parse_range(self):
         self.assertEqual(cli.parse_range("2-4,7", range(1, 10)), [2, 3, 4, 7])

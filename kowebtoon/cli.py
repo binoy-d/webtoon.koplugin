@@ -73,11 +73,15 @@ def grab(url, episodes, cfg, args):
             continue
         margin = args.margin if args.margin is not None else cfg.get("margin", 0.05)
         parts = render.load_strips([webtoons.fetch(u) for u in urls], width, margin)
+        fitted = 0
+        if fmt == "scroll" and not args.no_fit:
+            parts, fitted = render.fit_to_height(parts, width, height)
         ep_title = re.sub(r"^(Ep\.|Episode)\s*\d+\s*[-:–]\s*", "", subj)
         cover = None if args.no_cover else render.make_cover(parts, series, n, ep_title, width, height)
         if fmt == "scroll":
             strips, gaps = render.make_scroll_cbz(parts, path, f"{series} {subj}", cover)
-            print(f"  ep {n}: {strips} strips, {gaps} panel gaps -> {name}")
+            fit_note = f", {fitted} tall panel(s) fitted" if fitted else ""
+            print(f"  ep {n}: {strips} strips, {gaps} panel gaps{fit_note} -> {name}")
         else:
             pages = render.make_pages_cbz(parts, path, f"{series} {subj}", width, height, cover)
             print(f"  ep {n}: {pages} pages -> {name}")
@@ -120,6 +124,8 @@ def main(argv=None):
         p.add_argument("--out", help=f"local library folder (default {DEFAULT_OUT})")
         p.add_argument("--margin", type=float, help="blank space left/right of each panel, fraction per side (default 0.05)")
         p.add_argument("--no-cover", action="store_true", help="don't add a title cover page")
+        p.add_argument("--no-fit", action="store_true",
+                       help="don't shrink panels that are slightly taller than the screen")
         p.add_argument("--force", action="store_true", help="rebuild episodes that already exist")
         p.add_argument("--resend", action="store_true", help="deliver already-built episodes again")
 

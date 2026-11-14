@@ -42,10 +42,23 @@ local function prepareStrip(data, page_w, art_w)
         bb = toGray(RenderImage:scaleBlitBuffer(bb, art_w, h, true))
     end
     if art_w == page_w then return bb end
-    local out = Blitbuffer.new(page_w, bb:getHeight(), Blitbuffer.TYPE_BB8)
-    out:fill(Blitbuffer.COLOR_WHITE)
-    out:blitFrom(bb, math.floor((page_w - art_w) / 2), 0)
+    local h = bb:getHeight()
+    local left = math.floor((page_w - art_w) / 2)
+    local right = page_w - art_w - left
+    local out = Blitbuffer.new(page_w, h, Blitbuffer.TYPE_BB8)
+    out:blitFrom(bb, left, 0)
     bb:free()
+    -- each row's margins take the colour of that row's edge pixels: white gutters get white
+    -- margins, dark full-bleed scenes get dark ones (no white bars beside night scenes)
+    local base, stride = ffi.cast("uint8_t*", out.data), tonumber(out.stride)
+    for y = 0, h - 1 do
+        local row = base + y * stride
+        local l = math.floor((row[left] + row[left + 1] + row[left + 2]) / 3)
+        local r0 = left + art_w - 3
+        local r = math.floor((row[r0] + row[r0 + 1] + row[r0 + 2]) / 3)
+        ffi.fill(row, left, l)
+        ffi.fill(row + left + art_w, right, r)
+    end
     return out
 end
 
@@ -150,9 +163,12 @@ function M.build(ep, dir, opts)
             local s = y
             while y <= total and blank[y] do y = y + 1 end
             if y - s >= min_run then
+                -- {page, fraction} of the gap's centre, then of where the next panel starts
                 local g = math.floor((s + y) / 2) - 1
-                local p = locate(g)
-                table.insert(gaps, { p + 1, math.floor((g - tops[p]) / heights[p] * 100000) / 100000 })
+                local e = math.min(y - 1, total - 1)
+                local p, pe = locate(g), locate(e)
+                table.insert(gaps, { p + 1, math.floor((g - tops[p]) / heights[p] * 100000) / 100000,
+                    pe + 1, math.floor((e - tops[pe]) / heights[pe] * 100000) / 100000 })
                 table.insert(bounds, g)
             end
         end
@@ -195,7 +211,7 @@ function M.build(ep, dir, opts)
     w:addFileFromMemory("ComicInfo.xml", "<?xml version='1.0'?><ComicInfo><Title>"
         .. title:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;") .. "</Title></ComicInfo>")
     w:addFileFromMemory("kowebtoon.json", json.encode({
-        kowebtoon = 1, title = title, width = page_w, first_page = 2, gaps = gaps }))
+        kowebtoon = 2, title = title, width = page_w, first_page = 2, gaps = gaps }))
     w:close()
     os.rename(path .. ".part", path)
     lfs.rmdir(tmpdir)

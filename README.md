@@ -30,19 +30,27 @@ then one crisp refresh. No panel or bubble is ever split.
 
 - 📲 **Find and download on the device.** Search webtoons.com from KOReader, pick a series, and
   episodes download in the background while you keep reading. No computer needed.
-- 🎯 **Panel snap.** Taps land on the gaps between panels, never mid-panel.
+- 🎯 **Panel snap.** Each tap lands just above the next panel's top, with a little breathing
+  room, so you never start mid-panel and never stare at a screen of blank gutter.
+- 📐 **Fit-to-height.** A panel only slightly taller than the screen (up to 12%) is shrunk to fit,
+  instead of being split across two screens.
+- 🌗 **Adaptive margins.** The space beside each panel takes the colour of the art's edge, so dark
+  scenes don't get white bars.
 - ⚡ **Fast on e-ink.** Strips are pre-sized to your screen and the next ones are drawn while you
   read, so each tap is quick.
 - 👻 **Less ghosting.** Clean refreshes, plus a full flash every 20 taps (adjustable).
-- 📚 **Binge mode.** Hit the end of an episode and the next one opens.
+- 📚 **Binge mode.** Hit the end of an episode and the next one opens. Go back from the top and
+  the previous episode opens **at its end**.
+- 🧠 **Works on any webtoon CBZ.** Files from other tools get panel snapping too: panels are
+  detected on the device in the background and remembered per book.
 - 🖼️ **Real covers.** Each episode gets a cover with the series, episode number and title, so
   your library looks great in the cover browser.
 - 🔄 **Plays well with sync.** Deliver the same files to your reader *and* a library server
   (BookOrbit, Calibre-Web, ...) and reading progress follows you.
 - 📖 **A library that remembers.** Your series, with ✓ read, ↓ downloaded and % progress on every
   episode, plus "download next 5 unread" and "check for new episodes".
-- 🖐️ **Gesture-friendly.** "Webtoons: library" and "check for new episodes" can be mapped to any
-  gesture or button in KOReader.
+- 🖐️ **Gesture-friendly.** "Next panel", "previous panel", "library" and "check for new
+  episodes" can be mapped to any gesture or button in KOReader.
 - 🧘 **Leaves your books alone.** It only activates on webtoon episodes.
 
 ## Quick start
@@ -115,7 +123,7 @@ once, e.g. your reader *and* a book server. Add `?layout=folders` to a destinati
 episode its own folder; servers like BookOrbit need that to list episodes as separate books.
 If one destination is offline, the others still get the files; send later with `--resend`.
 
-**Other flags:** `--margin 0.05` sets the blank space beside each panel. `--format pages` makes pre-cut, screen-shaped pages for readers without the
+**Other flags:** `--no-fit` keeps slightly-too-tall panels at full size. `--margin 0.05` sets the blank space beside each panel. `--format pages` makes pre-cut, screen-shaped pages for readers without the
 plugin. `--width/--height` sets a custom screen size. `--no-cover` skips the cover, and `--force`
 rebuilds episodes you already have.
 </details>
@@ -153,7 +161,8 @@ you read.
 | Glide frames | 2 | Fewer = snappier, more = smoother |
 | Clean flash every | 20 taps | 10 / 20 / 40 / off |
 | Open next episode at the end | on | |
-| Glide on any tall comic | off | Glide (fixed steps, no snapping) for webtoon CBZs from other tools |
+| Smart scrolling for any webtoon CBZ | on | Panel snapping for webtoon CBZs from other tools, detected on the device |
+| Pre-render ahead | 2 strips | More = quicker taps, more memory |
 | Side margin for new downloads | 5% | Blank space left and right of each panel |
 | Turn off night mode for webtoons | on | Art reads un-inverted; night mode returns when you leave |
 </details>
@@ -168,8 +177,10 @@ runs. It's been tested on a Kindle Paperwhite 5. Reports from other devices are 
 
 <details>
 <summary><b>Can I use webtoons I already have as CBZ files?</b></summary>
-Yes: turn on <i>Glide on any tall comic</i>. You get the glide in fixed steps. Panel snapping needs
-the gap map the converter adds.
+Yes. Any CBZ whose pages are tall strips gets the glide, and the plugin finds the panels on the
+device in the background (a page or two between taps, nearest first) and remembers them for that
+book. Episodes from the downloader or the converter come with the map already inside, so they
+snap perfectly from the first tap.
 </details>
 
 <details>
@@ -180,7 +191,6 @@ wrong, the tap falls back to KOReader's normal page turn.
 
 ## Roadmap
 
-- Panel snapping for any webtoon CBZ, detected on the device
 - More sources
 
 ## Responsible use
@@ -197,6 +207,12 @@ pip install -e .
 python -m unittest discover -s tests -v
 python docs/make_demo_gif.py      # regenerates the demo (original art, drawn in code)
 ```
+
+## Credits
+
+Some ideas (fit-to-height, adaptive margins, opening the previous chapter at its end) were
+inspired by [Smart Webtoon Scroll](https://github.com/QQRush/smart-webtoon-scroll.koplugin).
+All code here is original.
 
 ## License
 

@@ -16,9 +16,10 @@ import zipfile
 import numpy as np
 from PIL import Image, ImageOps
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2      # 2: gaps carry where the blank run ends (top of the next panel)
 GUTTER_SPREAD = 6       # a row counts as blank if every pixel is within this many grey levels
 MAX_SHRINK = 2.0        # pages format: a single panel up to this x page height stays whole
+FIT_REDUCTION = 0.12    # scroll format: a panel up to 12% taller than the screen is shrunk to fit
 
 
 def load_strips(blobs, width, margin=0.0):
@@ -32,12 +33,22 @@ def load_strips(blobs, width, margin=0.0):
         im = ImageOps.grayscale(Image.open(io.BytesIO(b)).convert("RGB"))
         if im.width != art_w:
             im = im.resize((art_w, max(1, round(im.height * art_w / im.width))), Image.LANCZOS)
-        if art_w != width:
-            page = Image.new("L", (width, im.height), 255)
-            page.paste(im, ((width - art_w) // 2, 0))
-            im = page
-        parts.append(im)
+        parts.append(pad_sides(im, width))
     return parts
+
+
+def pad_sides(im, width):
+    """Centre `im` on a `width`-wide strip. Each row's margins take the colour of that row's edge
+    pixels, so white gutters get white margins and dark full-bleed scenes get dark ones."""
+    if im.width >= width:
+        return im
+    a = np.asarray(im, dtype=np.uint8)
+    left = (width - im.width) // 2
+    right = width - im.width - left
+    l_col = a[:, :3].mean(axis=1).astype(np.uint8)[:, None]
+    r_col = a[:, -3:].mean(axis=1).astype(np.uint8)[:, None]
+    out = np.hstack([np.repeat(l_col, left, axis=1), a, np.repeat(r_col, right, axis=1)])
+    return Image.fromarray(out, "L")
 
 
 def to_eink(im):
@@ -52,20 +63,74 @@ def row_profile(img):
     return (a.max(axis=1) - a.min(axis=1)), a.mean(axis=1).round().astype(int)
 
 
-def find_gutters(spread, width):
-    """Centres of blank row runs tall enough to be a gap between panels."""
+def find_runs(spread, width):
+    """(start, end) of blank row runs tall enough to be a gap between panels; end is exclusive,
+    i.e. the first row of the next panel."""
     min_run = max(8, width // 60)
     blank = spread <= GUTTER_SPREAD
-    gutters, y, h = [], 0, len(spread)
+    runs, y, h = [], 0, len(spread)
     while y < h:
         if blank[y]:
             s = y
             while y < h and blank[y]:
                 y += 1
             if y - s >= min_run:
-                gutters.append((s + y) // 2)
+                runs.append((s, y))
         y += 1
-    return gutters
+    return runs
+
+
+def find_gutters(spread, width):
+    """Centres of blank row runs tall enough to be a gap between panels."""
+    return [(s + e) // 2 for s, e in find_runs(spread, width)]
+
+
+def fit_to_height(parts, screen_w, screen_h, max_reduction=FIT_REDUCTION, chunk=1600):
+    """Shrink panels that are only slightly taller than the screen so each fits on one screen.
+
+    Works on the whole episode as one strip, then re-slices it into `chunk`-row strips (cut on
+    blank rows when possible). Returns (parts, panels_fitted).
+    """
+    strip = stack(parts)
+    w = strip.width
+    screen = round(w * screen_h / screen_w)
+    target = int(screen * 0.97)                       # leave a sliver of breathing room
+    spread, _ = row_profile(strip)
+    runs = find_runs(spread, w)
+    bounds = [0] + [e for _, e in runs] + [strip.height]
+    starts = [0] + [s for s, _ in runs]
+    pieces, fitted, y = [], 0, 0
+    for (s, e) in zip(bounds, starts[1:] + [strip.height]):
+        # panel occupies [s, e): from the end of one blank run to the start of the next
+        if e <= s:
+            continue
+        if y < s:
+            pieces.append(strip.crop((0, y, w, s)))
+        panel = strip.crop((0, s, w, e))
+        h = e - s
+        if target < h <= target / (1 - max_reduction):
+            k = target / h
+            small = panel.resize((max(1, round(w * k)), target), Image.LANCZOS)
+            panel = pad_sides(small, w)
+            fitted += 1
+        pieces.append(panel)
+        y = e
+    if y < strip.height:
+        pieces.append(strip.crop((0, y, w, strip.height)))
+    if not fitted:
+        return parts, 0
+    full = stack(pieces)
+    spread, _ = row_profile(full)
+    blank = spread <= GUTTER_SPREAD
+    out, top = [], 0
+    while full.height - top > chunk * 1.5:
+        cut = top + chunk
+        near = np.where(blank[cut - chunk // 4: cut + chunk // 4])[0]
+        if len(near):
+            cut = cut - chunk // 4 + int(near[len(near) // 2])
+        out.append(full.crop((0, top, w, cut))); top = cut
+    out.append(full.crop((0, top, w, full.height)))
+    return out, fitted
 
 
 def stack(parts):
@@ -181,11 +246,16 @@ def make_scroll_cbz(parts, path, title, cover=None):
     tops, acc = [], 0
     for p in parts:
         tops.append(acc); acc += p.height
-    gaps, pi = [], 0
-    for g in find_gutters(spread, parts[0].width):
-        while pi + 1 < len(parts) and tops[pi + 1] <= g:
+    def locate(row):
+        pi = 0
+        while pi + 1 < len(parts) and tops[pi + 1] <= row:
             pi += 1
-        gaps.append([pi + 1 + offset, round((g - tops[pi]) / parts[pi].height, 5)])
+        return pi + 1 + offset, round((row - tops[pi]) / parts[pi].height, 5)
+
+    gaps = []
+    for s, e in find_runs(spread, parts[0].width):
+        # [page, fraction] of the gap's centre, then of where the next panel starts
+        gaps.append([*locate((s + e) // 2), *locate(min(e, sum(p.height for p in parts) - 1))])
     meta = {"kowebtoon": FORMAT_VERSION, "title": title, "width": parts[0].width,
             "first_page": 1 + offset, "gaps": gaps}
     pages = ([cover] if cover is not None else []) + parts
