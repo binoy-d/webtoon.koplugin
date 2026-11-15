@@ -105,6 +105,15 @@ function M.episodes(list_url, stop_at)
     return series or "Webtoon", eps
 end
 
+--- The series' square poster (og:image of its list page) as JPEG bytes.
+function M.seriesCover(list_url)
+    local body, err = M.get(list_url)
+    if not body then return nil, err end
+    local img = body:match('<meta property="og:image" content="([^"]+)"')
+    if not img then return nil, "no og:image" end
+    return M.get(M.unescape(img))
+end
+
 --- Image strip URLs of one episode (empty if locked).
 function M.images(viewer_url)
     local body, err = M.get(viewer_url)

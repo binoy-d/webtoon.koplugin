@@ -62,8 +62,10 @@ Each episode takes about 45 seconds on a Kindle Paperwhite, mostly downloading.
   the previous episode opens **at its end**.
 - 🧠 **Works on any webtoon CBZ.** Files from other tools get panel snapping too: panels are
   detected on the device in the background and remembered per book.
-- 🖼️ **Real covers.** Each episode gets a cover with the series, episode number and title, so
-  your library looks great in the cover browser.
+- 🖼️ **Real covers.** Each episode gets a cover with a full-width scene from the episode (picked so
+  panels start whole and speech bubbles aren't cut), the series, episode number and title.
+- ▶️ **Continue from the folder.** In the cover browser, every series folder shows its poster and a
+  "▶ Ep. 12 · 40%" button: tap it to jump back into the episode you're on, or the next one.
 - 🔄 **Plays well with sync.** Deliver the same files to your reader *and* a library server
   (BookOrbit, Calibre-Web, ...) and reading progress follows you.
 - 📖 **A library that remembers.** Your series, with ✓ read, ↓ downloaded and % progress on every

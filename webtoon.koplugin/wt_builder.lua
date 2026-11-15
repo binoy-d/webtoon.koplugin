@@ -92,37 +92,51 @@ local function encodeJpeg(bb, tmp)
 end
 
 -- the biggest panel in the middle 80% of the episode, as {start_row, end_row}
-local function pickPanel(bounds, total)
-    local best, span = -1, nil
-    for i = 1, #bounds - 1 do
-        local s, e = bounds[i], bounds[i + 1]
-        if s > total * 0.1 and e < total * 0.95 and e - s > best then best, span = e - s, { s, e } end
+--- Top row of the cover-art window: art_h rows, full width, skipping the first 10% (title card) and
+-- the last 5%. Prefers windows that are mostly drawn and start (and end) on a blank row, so panels
+-- begin whole and speech bubbles aren't cut. Same idea as the desktop converter's pick_art_window.
+local function pickArtWindow(blank, total, art_h)
+    if total <= art_h then return 0 end
+    local busy = { [0] = 0 }
+    for y = 1, total do busy[y] = busy[y - 1] + (blank[y] and 0 or 1) end
+    local lo = math.floor(total * 0.1)
+    local hi = math.max(lo, math.floor(total * 0.95) - art_h)
+    local best, best_t = -1, lo
+    for t = lo, hi, 2 do
+        local score = (busy[t + art_h] - busy[t]) / art_h
+            * (1 + (blank[t + 1] and 2 or 0) + (blank[t + art_h] and 0.5 or 0))
+        if score > best then best, best_t = score, t end
     end
-    return span or { 0, math.min(total, 1200) }
+    return best_t
 end
 
 local function drawCover(page_w, page_h, panel_bb, series, ep_no, ep_title)
     local cover = Blitbuffer.new(page_w, page_h, Blitbuffer.TYPE_BB8)
     cover:fill(Blitbuffer.COLOR_WHITE)
-    local art_h = math.floor(page_h * 0.64)
-    local pad = math.floor(page_w * 0.04)
+    local art_h = math.floor(page_h * 0.62)
     if panel_bb then
-        local bw, bh = page_w - 2 * pad, art_h - 2 * pad
-        local s = math.min(bw / panel_bb:getWidth(), bh / panel_bb:getHeight())
-        local nw, nh = math.max(1, math.floor(panel_bb:getWidth() * s)), math.max(1, math.floor(panel_bb:getHeight() * s))
+        -- zoom past "fit" (up to 1.6x, never past "fill") so the art fills the box but little of the
+        -- panel (speech bubbles!) is cropped; overflow is trimmed keeping more of the panel's top
+        local pw, ph = panel_bb:getWidth(), panel_bb:getHeight()
+        local fit = math.min(page_w / pw, art_h / ph)
+        local s = math.min(math.max(page_w / pw, art_h / ph), fit * 1.6)
+        local nw, nh = math.max(1, math.floor(pw * s + 0.5)), math.max(1, math.floor(ph * s + 0.5))
         local scaled = toGray(RenderImage:scaleBlitBuffer(panel_bb, nw, nh, true))
-        cover:blitFrom(scaled, math.floor((page_w - nw) / 2), pad + math.floor((bh - nh) / 2))
+        local w, h = math.min(nw, page_w), math.min(nh, art_h)
+        cover:blitFrom(scaled, math.floor((page_w - w) / 2), math.floor((art_h - h) / 2),
+            math.floor((nw - w) / 2), math.floor((nh - h) * 0.3), w, h)
         scaled:free()
     end
-    cover:paintRect(0, art_h, page_w, math.max(2, math.floor(page_w / 300)), Blitbuffer.COLOR_BLACK)
+    cover:paintRect(0, art_h, page_w, math.max(3, math.floor(page_w / 250)), Blitbuffer.COLOR_BLACK)
     local m = math.floor(page_w * 0.07)
     local y = art_h + math.floor(page_h * 0.035)
-    local px = function(v) return math.floor(v / Device.screen:scaleBySize(1) + 0.5) end   -- getFace scales sizes
-    local small = TextWidget:new{ text = "EPISODE " .. ep_no, face = Font:getFace("NotoSerif-Regular.ttf", px(page_w * 0.035)), fgcolor = Blitbuffer.gray(0.6) }
+    local scale = Device.screen:scaleBySize(1000) / 1000
+    local px = function(v) return math.floor(v / scale + 0.5) end   -- getFace scales sizes by DPI
+    local small = TextWidget:new{ text = "EPISODE " .. ep_no, face = Font:getFace("NotoSans-Bold.ttf", px(page_w * 0.042)), fgcolor = Blitbuffer.gray(0.8) }
     small:paintTo(cover, m, y); y = y + small:getSize().h + math.floor(page_w * 0.015)
-    local big = TextBoxWidget:new{ text = series, face = Font:getFace("NotoSerif-Bold.ttf", px(page_w * 0.075)), width = page_w - 2 * m, height_adjust = true }
+    local big = TextBoxWidget:new{ text = series, face = Font:getFace("NotoSerif-Bold.ttf", px(page_w * 0.09)), width = page_w - 2 * m, height_adjust = true }
     big:paintTo(cover, m, y); y = y + big:getSize().h + math.floor(page_w * 0.02)
-    local sub = TextBoxWidget:new{ text = ep_title, face = Font:getFace("NotoSerif-Regular.ttf", px(page_w * 0.045)), width = page_w - 2 * m, fgcolor = Blitbuffer.gray(0.75) }
+    local sub = TextBoxWidget:new{ text = ep_title, face = Font:getFace("NotoSerif-Regular.ttf", px(page_w * 0.06)), width = page_w - 2 * m, fgcolor = Blitbuffer.gray(0.9) }
     sub:paintTo(cover, m, y)
     small:free(); big:free(); sub:free()
     return cover
@@ -255,7 +269,7 @@ function M.build(ep, dir, opts)
     local tops, acc = {}, 0
     for i, h in ipairs(heights) do tops[i] = acc; acc = acc + h end
     local total = acc
-    local gaps, bounds, y = {}, { 0 }, 1
+    local gaps, y = {}, 1
     local function locate(g)
         local p = #tops
         while p > 1 and tops[p] > g do p = p - 1 end
@@ -272,16 +286,15 @@ function M.build(ep, dir, opts)
                 local p, pe = locate(g), locate(e)
                 table.insert(gaps, { p + 1, math.floor((g - tops[p]) / heights[p] * 100000) / 100000,
                     pe + 1, math.floor((e - tops[pe]) / heights[pe] * 100000) / 100000 })
-                table.insert(bounds, g)
             end
         end
         y = y + 1
     end
-    table.insert(bounds, total)
-
-    -- cover art: the biggest panel, re-decoded from the strips it spans
-    local span = pickPanel(bounds, total)
-    local panel_h = math.min(span[2] - span[1], page_h * 3)
+    -- cover art: one screen-wide window of the episode, re-decoded from the strips it spans
+    local art_h = math.floor(page_h * 0.62) -- keep in sync with drawCover
+    local top = pickArtWindow(blank, total, art_h)
+    local span = { top, math.min(total, top + art_h) }
+    local panel_h = span[2] - span[1]
     local panel = Blitbuffer.new(page_w, math.max(1, panel_h), Blitbuffer.TYPE_BB8)
     panel:fill(Blitbuffer.COLOR_WHITE)
     for i = 1, #strips do

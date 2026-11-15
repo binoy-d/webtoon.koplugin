@@ -62,6 +62,10 @@ function Webtoon:init()
         title = _("Webtoons: next panel"), reader = true })
     Dispatcher:registerAction("webtoon_prev_panel", { category = "none", event = "WebtoonPrevPanel",
         title = _("Webtoons: previous panel"), reader = true })
+    if not self.ui.document then
+        local ok, err = pcall(function() require("wt_folders").hook() end)
+        if not ok then logger.warn("webtoon: folder tiles off:", err) end
+    end
     -- KOReader was quit while a webtoon was open: give night mode back in the file browser
     if not self.ui.document and G_reader_settings:isTrue("webtoon_restore_night") then
         UIManager:nextTick(function()

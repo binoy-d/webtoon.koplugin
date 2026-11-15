@@ -172,52 +172,60 @@ def _wrap(draw, text, font, max_w, max_lines):
     return lines
 
 
+def pick_art_window(strip, art_h):
+    """Top row of the best full-width, art_h-tall window for a cover, shown at native size.
+
+    Slides down the episode (skipping the first 10%, usually a title card, and the last 5%) and
+    scores each window by detail (pixel std) times how much of it is drawn, boosted when its edges
+    fall on blank rows (the top most), so panels start whole and speech bubbles aren't cut.
+    """
+    a = np.asarray(strip, dtype=np.float64)
+    spread, _ = row_profile(strip)
+    blank = spread <= GUTTER_SPREAD
+    n = a.shape[1] * art_h
+    c1 = np.concatenate([[0.0], np.cumsum(a.sum(axis=1))])
+    c2 = np.concatenate([[0.0], np.cumsum((a * a).sum(axis=1))])
+    cb = np.concatenate([[0], np.cumsum(~blank)])
+    lo = int(strip.height * 0.1)
+    hi = max(lo, int(strip.height * 0.95) - art_h)
+    t = np.arange(lo, hi + 1)
+    mean = (c1[t + art_h] - c1[t]) / n
+    std = np.sqrt(np.maximum(0.0, (c2[t + art_h] - c2[t]) / n - mean * mean))
+    busy = (cb[t + art_h] - cb[t]) / art_h
+    # a blank top edge matters most: panels lead with faces and speech bubbles
+    score = std * np.sqrt(busy) * (1 + 2 * blank[t] + 0.5 * blank[t + art_h - 1])
+    return int(t[int(np.argmax(score))])
+
+
 def make_cover(parts, series, ep_no, ep_title, screen_w, screen_h):
     """A screen-sized cover: the episode's busiest scene on top, title band below."""
     from PIL import ImageDraw
     strip = stack(parts)
     w = strip.width
     h = round(w * screen_h / screen_w)
-    art_h = round(h * 0.64)
-    # cover art = one WHOLE panel (span between two gaps, so no bubble is cut): the most detailed
-    # reasonably big one, skipping the first 10% (usually a title card), fitted into the art box
-    spread, _ = row_profile(strip)
-    bounds = [0] + find_gutters(spread, w) + [strip.height]
-    a = np.asarray(strip, dtype=np.float32)
-    best, best_span = -1.0, (0, min(strip.height, art_h))
-    for s, e in zip(bounds, bounds[1:]):
-        if e - s < art_h * 0.3 or s < strip.height * 0.1:
-            continue
-        score = float(a[s:e].std()) * min(1.0, (e - s) / art_h)
-        if score > best:
-            best, best_span = score, (s, e)
-    panel = strip.crop((0, best_span[0], w, best_span[1]))
-    px = np.asarray(panel, dtype=np.int16)     # trim blank margins on all sides so the panel fills the box
-    busy_x = np.where((px.max(axis=0) - px.min(axis=0)) > GUTTER_SPREAD)[0]
-    busy_y = np.where((px.max(axis=1) - px.min(axis=1)) > GUTTER_SPREAD)[0]
-    if len(busy_x) and len(busy_y):
-        panel = panel.crop((int(busy_x[0]), int(busy_y[0]), int(busy_x[-1]) + 1, int(busy_y[-1]) + 1))
-    pad = round(w * 0.04)
-    box_w, box_h = w - 2 * pad, art_h - 2 * pad
-    scale = min(box_w / panel.width, box_h / panel.height)
-    panel = panel.resize((max(1, round(panel.width * scale)), max(1, round(panel.height * scale))), Image.LANCZOS)
+    art_h = round(h * 0.62)
     cover = Image.new("L", (w, h), 255)
-    cover.paste(panel, ((w - panel.width) // 2, pad + (box_h - panel.height) // 2))
+    if strip.height <= art_h:
+        art = strip
+    else:
+        top = pick_art_window(strip, art_h)
+        art = strip.crop((0, top, w, top + art_h))
+    cover.paste(art, (0, (art_h - art.height) // 2))
     d = ImageDraw.Draw(cover)
     d.rectangle((0, art_h, w, h), fill=255)
-    d.line((0, art_h, w, art_h), fill=0, width=max(2, w // 300))
+    d.line((0, art_h, w, art_h), fill=0, width=max(3, w // 250))
     m = round(w * 0.07)
     y = art_h + round(h * 0.035)
-    small, big, mid = _font(round(w * 0.035)), _font(round(w * 0.085), bold=True), _font(round(w * 0.05))
-    d.text((m, y), f"EPISODE {ep_no}", font=small, fill=90)
-    y += round(w * 0.06)
+    small, big, mid = _font(round(w * 0.042), bold=True), _font(round(w * 0.09), bold=True), _font(round(w * 0.06))
+    d.text((m, y), f"EPISODE {ep_no}", font=small, fill=50)
+    y += round(w * 0.07)
     for line in _wrap(d, series, big, w - 2 * m, 2):
         d.text((m, y), line, font=big, fill=0)
-        y += round(w * 0.1)
+        y += round(w * 0.105)
     y += round(w * 0.015)
     for line in _wrap(d, ep_title, mid, w - 2 * m, 2):
-        d.text((m, y), line, font=mid, fill=60)
-        y += round(w * 0.065)
+        d.text((m, y), line, font=mid, fill=25)
+        y += round(w * 0.075)
     return to_eink(cover)
 
 
